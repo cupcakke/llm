@@ -1,6 +1,6 @@
 JAIDE
 
-JAIDE egy foundation large language model. Az architektúrája az 5. root architektúra — az előző négy paradigma (Perceptron, CNN, RNN, Transformer) után az ötödik önálló architektúralis paradigma. Az 5. root architektúra konkrét megvalósítása a Reversible Scatter Flow (RSF): bijektív, aktiváció-cache nélküli, invertálható normalizing flow rétegek sorozata, amelyek garantált egzakt inverzzel rendelkeznek.
+JAIDE egy foundation large language model. Az architektúrája az 5. root architektúra — az előző négy paradigma (Perceptron, CNN, RNN, Transformer) után az ötödik önálló architektúralis paradigma. Az 5. root architektúra konkrét megvalósítása a Reversible Scatter Flow (RSF): bijektív, aktiváció-cache nélküli, invertálható rétegek sorozata, amelyek garantált egzakt inverzzel rendelkeznek.
 
 ---
 
