@@ -1,570 +1,2277 @@
-JAIDE
+JAIDE ÁTTEKINTÉS
 
-JAIDE egy foundation large language model. Az architektúrája az 5. root architektúra — az előző négy paradigma (Perceptron, CNN, RNN, Transformer) után az ötödik önálló architektúralis paradigma. Az 5. root architektúra konkrét megvalósítása a Reversible Scatter Flow (RSF): bijektív, aktiváció-cache nélküli, invertálható rétegek sorozata, amelyek garantált egzakt inverzzel rendelkeznek.
+A JAIDE egy foundation nagy nyelvi modell, amely az 5. gyök architektúra paradigmán alapul. Ez a modell eltér a hagyományos Perceptron, CNN, RNN és Transformer architektúráktól azáltal, hogy Visszafordítható Szórt Folyam (RSF) vermet alkalmaz. Ez a tervezés biztosítja, hogy minden neurális réteg bijektív és invertálható legyen, lehetővé téve az O(dim) memória komplexitást a visszaterjesztés során, mivel az aktivációk menet közben rekonstruálhatók ahelyett, hogy gyorsítótárban tárolnák őket.
 
----
+A rendszer ezt a visszafordítható neurális gerincet egy magas szintű kognitív réteggel integrálja, amelyet Mag Relációs Rétegnek neveznek, és amely kvantum-inspirált relációs gráfokat és fraktál dinamikát alkalmaz az érveléshez.
 
-AZ 5. ROOT ARCHITEKTÚRA — REVERSIBLE SCATTER FLOW (RSF)
+Az 5. gyök paradigma: Visszafordítható Szórt Folyam (RSF)
 
-Az RSF kereszt-affin coupling rétegekből és determinisztikus scatter permutációkból áll. Minden réteg bijektív: det J > 0 mindenütt, az inverz zárt formában létezik.
+A JAIDE neurális feldolgozásának magja az RSFLayer, amely kereszt-affin csatoló rétegekből és determinisztikus szórt permutációkból áll. A Transformerekkel ellentétben, amelyek O(L · S · d) memória skálázástól szenvednek a figyelemmechanizmusok miatt, a JAIDE fix memória lábnyomot tart fenn az L mélységtől függetlenül.
 
-Forward lépés (egy réteg):
-scale[i] = exp(clip(W_s · x2 + b_s, min, max))
-y1 = x1 ⊙ scale
-y2 = x2 + W_t · y1 + b_t
+Főbb neurális komponensek:
 
-Inverz lépés (backward aktiváció-rekonstrukció):
-x2 = y2 − W_t · y1 − b_t
-x1 = y1 / scale ahol scale = exp(clip(W_s · x2 + b_s))
+- RSF réteg: Megvalósítja a forwardInPlace és inverseInPlace műveleteket skála (S) és fordítás (T) komponensek segítségével.
+- OFTB (Ortogonális Fraktál Transzformációs Blokk): Paraméter nélküli, determinisztikus Haar-wavelet szóró/gyűjtő réteg.
+- SFD (Spektrális Fisher Diagonalizáló): Másodrendű optimalizáló, amely közelíti az átlós Fisher információs mátrixot spektrális vágással.
 
-A backward pass az aktivációkat rétegenkénti inverz rekonstrukcióval (batch_rsf_inverse Futhark entry) állítja vissza — az aktivációs cache O(dim), L-től független. A backwardFromOutputs CPU-oldali referencia-implementáció (rsf.zig) és a GPU-oldali batch_rsf_inverse ugyanazt a matematikát valósítja meg.
+Mag Relációs Réteg
 
-OFTB (Orthogonal Fractal Transform Block): Haar-wavelet alapú, paramétermentes, determinisztikus scatter/gather réteg. Ortogonális transzformáció: inverze = transzponáltja. O(1) paraméter, O(dim) számítás. Formálisan bizonyított invertálhatóság: src/verifaction/oftb.lean.
+A JAIDE túlmutat az egyszerű token előrejelzésen azáltal, hogy fenntart egy Önhasonló Relációs Gráfot (SSRG / NSIR). Ez a réteg explicit módon tárolja a tokenek közötti kapcsolatokat ritka gráfként, lehetővé téve a szelektív figyelmet O(d) komplexitással.
 
-ÖSSZEHASONLÍTÁS
+Főbb alrendszerek:
 
-Architektúra | Primitív | Invertálható? | Backward memória
-Perceptron | σ(Wx+b) | σ veszteséges → nem | O(L)
-CNN | σ(W∗x) | pooling+σ → nem | O(L)
-RNN | σ(W_h h + W_x x) | rejtett állapot → nem | O(T)
-Transformer | softmax(QKᵀ/√d)V | softmax → nem | O(L·S·d)
-RSF (5. root) | kereszt-affin coupling | det J > 0 → igen | O(dim)
+- NSIR: Csomópontokat és éleket kezel EdgeQuality állapotokkal (szuperpozíció, összefonódott, koherens, összeomlott, fraktál).
+- ReasoningOrchestrator: Három szintű megismerést kezel: helyi, globális és meta.
+- ZRuntime: Egy relációs végrehajtó motor, amely olyan műveleteket dolgoz fel, mint az entangle_variables és a quantum_circuit.
 
----
+Navigáció és aloldalak
 
-RENDSZERARCHITEKTÚRA
+A dokumentáció speciális szakaszokba van szervezve, amelyek a teljes vermet lefedik a hardver RTL-től a magas szintű érvelésig.
 
-src/core/ — Numerikus alap
+Kezdeti lépések és Build rendszer
 
-- types.zig: Az egész rendszer típusalapja: fixpontos aritmetika (Fixed32_32, FixedPoint16/32/64), determinisztikus xoshiro-alapú PRNG, ContextWindow tokenablak, RankedSegment, bithalmazok, komplex fixpontos számok, hibatípusok.
-- tensor.zig: Referenciaszámláló, copy-on-write Tensor típus 32 bájtos SIMD-igazítással, 8-sávos vektorizált elemenkénti műveletekkel, lazy view/slice/transpose/broadcast szemantikával.
-- memory.zig: MemoryBlock és MemoryBlockState (free, allocated, entangled): az entangled blokkok a reverzibilis lépések között újrahasznosíthatók. Arena és pool allokátor, scratch allokátor a backward pass ideiglenes puffereinek.
-- learned_embedding.zig: Tanulható token-embedding tábla, SFD-kompatibilis gradiens-frissítéssel.
-- model_io.zig: Modell mentés/betöltés, checkpoint kezelés.
-- io.zig: Adatbetöltés, tokenizált minták streamelése.
+Lefedi a Zig 0.13.0 eszközlánc és a Futhark fordító követelményeit. Részletezi, hogyan kell felépíteni a jaide-inference-server és a jaide-distributed-futhark futtatható fájlokat a -Dgpu jelző segítségével.
 
-src/processor/ — Az 5. root architektúra rétegei
+Rendszerarchitektúra áttekintés
 
-- rsf.zig: LayerCore struktúra: s_weight [dim×dim], t_weight [dim×dim], s_bias [dim], t_bias [dim]. forwardInPlace, backwardFromOutputs (aktiváció-cache nélküli reverzibilis backward), inverseInPlace. Thread-safe RwLock-kal.
-- oftb.zig: OFTB: Haar-wavelet scatter/gather, forwardInPlace, backwardInPlace. FRACTAL_SCALE = 1/√2. Paramétermentes, O(1) memória.
+Mélyreható betekintést nyújt a kétrétegű interakciós modellbe: hogyan kezeli a processor/ verem a nagy dimenziós numerikus folyamokat, miközben a core_relational/ réteg szimbolikus és kvantum-relációs struktúrákat kezel.
 
-src/optimizer/ — Spektrális optimalizálás
+Összefoglaló táblázat: Főbb alrendszerek
 
-- sfd.zig: SpectralFisherDiagonalizer (SFD): másodrendű optimalizáló, amely a diagonális Fisher-információs mátrixot spektrális klippinggel közelíti. Nem Adam — a Fisher-diagonális becslés és a spektrális normalizáció az SFD saját matematikája. ReversibleOptimizerState: iteratív, in-place frissítés.
-
-src/core_relational/ — Relációs intelligencia réteg
-
-Ez a réteg adja a JAIDE magasabb szintű kognitív képességeit: gráf-alapú relációs reprezentáció, kvantum-inspirált szimmetria-optimalizálás, kauzális verifikáció és fraktális dinamikus rendszerek.
-
-- nsir_core.zig: SelfSimilarRelationalGraph (SSRG / NSIR): csomópontok és élek gráfja, ahol az élek EdgeQuality típussal rendelkeznek (superposition, entangled, coherent, collapsed, fractal). Kvantum-korreláció (Complex(f64)) és fraktális dimenzió minden élen. Az NSIR a tokenek közötti relációkat explicit gráf-struktúraként tárolja — ritka, szelektív figyelem O(d) komplexitással az attention O(n²d) helyett.
-- esso_optimizer.zig: EntangledStochasticSymmetryOptimizer (ESSO): az NSIR-gráf csomópontjait és éleit optimalizálja szimmetria-alapú, sztochasztikus perturbációval. Szimulált hűtés (simulated annealing) gráf-szimmetriák mentén.
-- crev_pipeline.zig: CREVPipeline (Causal Reasoning and Verification): triplet extrakció (alany–állítmány–tárgy), kauzális lánc validáció, ellentmondás-detekció. Online tanulást tesz lehetővé inferencia közben.
-- fnds.zig: FractalNeuralDynamicSystem (FNDS): fraktális fa hierarchia (FractalTree, FractalLevel), önhasonló struktúrák dinamikus frissítéssel. FNDSManager koordinálja a fraktális szintek közötti propagációt.
-- vpu.zig: VPU (Vector Processing Unit): SIMD-vektorizált relációs műveletek, SimdVector<T, N> típus f32/f64/i32/i64/u32/u64 elemekre. A relációs gráf vektorizált feldolgozása.
-- chaos_core.zig: ChaosCoreKernel: kaotikus dinamika, nemlineáris attraktorok, Lyapunov-exponens becslés. A CREV pipeline kaotikus perturbációs magja.
-- z_runtime.zig: ZRuntime: relációs végrehajtási motor. ExecutionAction enum: create_variable, delete_variable, relational_operation, entangle_variables, propagate_information, fractal_transform, measure, quantum_circuit, relational_expression. Determinisztikus végrehajtási napló.
-- reasoning_orchestrator.zig: ReasoningOrchestrator: háromszintű gondolkodás (ThoughtLevel: local, global, meta). Koordinálja az NSIR, CREV, FNDS és ZRuntime komponenseket.
-- signal_propagation.zig: SignalPropagationEngine: jelterjedés az NSIR-gráfon, aktivációs hullámok, gráf-konvolúció.
-- surprise_memory.zig: SurpriseMemoryManager: meglepetés-alapú memória, online tanulás inferencia közben. Magas meglepetési értékű tokenek hosszú távú tárolása.
-- temporal_graph.zig: TemporalGraph: időbélyeges gráf-élek, kauzális időrend, temporális relációk nyomon követése.
-- quantum_logic.zig: Kvantum-logikai kapuk szimulációja (Hadamard, CNOT, Toffoli), szuperpozíció és összefonódás reprezentáció.
-- ibm_quantum.zig / quantum_hardware.zig / quantum_task_adapter.zig: IBM Quantum hardver interfész, kvantum-áramkör végrehajtás valódi kvantumhardveren.
-- r_gpu.zig: RelationalGraphProcessingUnit: az NSIR-gráf GPU-gyorsított feldolgozása, gráf-műveletek párhuzamosítása.
-- formal_verification.zig / security_proofs.zig / type_theory.zig: Formális verifikáció, biztonsági bizonyítékok, típuselméleti garanciák futásidőben.
-- verified_inference_engine.zig: Verifikált inferencia motor: minden következtetési lépés formálisan ellenőrzött.
-- zk_verification.zig: ZK-bizonyítékok futásidejű verifikációja.
-- dataset_obfuscation.zig: Adathalmaz obfuszkáció, adatvédelmi réteg.
-- safety.zig: Biztonsági szűrők, tartalomszűrés.
-- c_api.zig: C API a core_relational alrendszerhez.
-- mod.zig: Modul belépési pont.
-
-src/ranker/ + src/index/ — Hosszú kontextus
-
-- ranker.zig: Ranker: streaming rangsoroló, szegmensek relevancia-pontszámozása az SSI-n keresztül. streamingRank O(log n) lekérdezéssel. Szétválasztja a szekvenciahosszt a kontextusszélességtől.
-- ssi.zig: SelfSimilarIndex (SSI): O(log n) pozíció-megőrző külső memória, determinisztikus streaming frissítéssel és lekérdezéssel. 50M+ token kontextus O(log n) memóriával.
-
-src/tokenizer/ — Morfológiai tokenizálás
-
-- mgt.zig: MorphoGraphTokenizer (MGT): morfológiai gráf alapú tokenizáló, determinisztikus "anchor" markerekkel az SSI számára. tokenizeWithAnchors egyszerre adja vissza a tokeneket és az SSI-pozíciókat.
-
-src/hw/ — Hardver réteg
-
-src/hw/accel/ — GPU gyorsítás (Futhark)
-
-- futhark_kernels.fut: Belső helper függvények: rsf_flow (forward coupling), rsf_inverse_flow (inverz coupling, backward aktiváció-rekonstrukcióhoz), rsf_scatter / rsf_backward_scatter (OFTB scatter/gather), matmul_tiled, rsf_relational_context (vektoros RSF a relációs kontextushoz).
-- main.fut: Futhark entry pointok: batch_forward, batch_gradients_full, batch_rsf_inverse (rétegenkénti inverz rekonstrukció a backward passhoz), batch_oftb_forward, batch_oftb_backward, oftb_forward_single.
-- futhark_bindings.zig: Zig extern deklarációk a Futhark C API-hoz, beleértve futhark_entry_batch_rsf_inverse.
-- accel_interface.zig: RSFAccelerator: trainingStep a teljes forward–loss–backward–SFD ciklust GPU-n hajtja végre. A backward loop batch_rsf_inverse-szel rekonstruálja a közbülső aktivációkat — aktivációs cache O(dim), L-től független. RSFLayer struktúra: weights_s, weights_t (FutharkArray2DF16 [half×half]), velocity_s, velocity_t, biasok.
-- fractal_lpu.zig: FractalLPU: fraktális csempe-alapú feldolgozó egység, FractalTile hierarchia.
-- cuda_bindings.zig: CUDA C binding-ok.
-
-src/hw/rtl/ — Hardver leírás (Haskell/Clash)
-
-- MemoryArbiter.hs: Memória-arbitrátor RTL leírás.
-- RankerCore.hs: Ranker mag RTL leírás.
-- SSISearch.hs: SSI keresési logika RTL leírás.
-
-src/distributed/ — Elosztott tanítás
-
-- distributed_trainer_futhark.zig: DistributedTrainerFuthark: koordinálja az RSF GPU tanítást (RSFAccelerator), az embedding frissítést, és a runCoreRelationalPass-t (ESSO + CREV + NSIR + ZRuntime). 8× B200 GPU, NCCL.
-- gpu_coordinator.zig: GPU koordinátor, rank-kezelés.
-- modal_gpu.zig: Modal.com GPU integráció.
-- nccl_bindings.zig: NCCL C binding-ok all-reduce műveletekhez.
-
-src/api/ — Inferencia szerver
-
-- inference_server.zig: HTTP inferencia szerver, /generate és /health endpoint, streaming token generálás.
-
-src/zk/ + src/verifaction/ — Formális garanciák
-
-- zk/inference_trace.circom: Circom ZK-áramkör: az RSF inferencia helyességének zero-knowledge bizonyítéka.
-- verifaction/oftb.lean: Lean 4 formális bizonyítás az OFTB invertálhatóságára: backwardCore(forwardCore(L)) = L minden L-re.
-
-src/scripts/
-
-- modal_distributed_train.py: Modal.com orchestrator: GPU konténer indítás (8× B200), Zig bináris fordítás (zig build distributed-futhark -Dgpu=true), world_size példány indítása subprocess-ként.
+| Alrendszer | Elsődleges felelősség | Főbb kódfájlok |
+| :--- | :--- | :--- |
+| Numerikus mag | Tenzorok, memória, SIMD | src/core/tensor.zig, src/core/memory.zig |
+| Neurális verem | RSF rétegek, OFTB keverés | src/processor/rsf.zig, src/processor/oftb.zig |
+| Relációs réteg | NSIR gráf, érvelés | src/core_relational/nsir_core.zig, src/core_relational/reasoning_orchestrator.zig |
+| Hardver gyorsítás | Futhark kernelek, CUDA | src/hw/accel/, src/main_distributed_futhark.zig |
+| Kiszolgálás/Index | SSI, Ranker, HTTP API | src/index/ssi.zig, src/inference_server_main.zig |
 
 ---
 
-MEMÓRIA-KOMPLEXITÁS
+1.1 KEZDETI LÉPÉSEK ÉS BUILD RENDSZER
 
-Komponens | Komplexitás | Megjegyzés
-Aktivációs cache (backward) | O(dim) | Inverz rekonstrukció, L-től független
-Gradiens bufferek (1 réteg, átmeneti) | O(dim²) | Azonnal felszabadul
-OFTB backward | O(dim) | Paramétermentes
+Ez az oldal részletezi a JAIDE rendszer build infrastruktúráját, eszközlánc-követelményeit és elsődleges végrehajtási belépési pontjait. A JAIDE egy hibrid build rendszert alkalmaz, amely a Zig eszközlánc köré épül, és C-alapú Futhark kerneleket integrál a hardver-gyorsított neurális és relációs feldolgozáshoz.
+
+Eszközlánc-követelmények
+
+A JAIDE felépítéséhez és futtatásához a következő környezet szükséges:
+
+- Zig fordító: A 0.13.0-s vagy újabb verzió szükséges, ahogy azt a build.zig.zon build manifest meghatározza.
+- Futhark: Szükséges a src/hw/accel/ könyvtárban található C kernelek generálásához.
+- C eszközlánc: Rendszer C fordító (pl. GCC vagy Clang) és libc a generált Futhark kód linkeléséhez.
+- CUDA Toolkit (opcionális): Szükséges a GPU-gyorsított elosztott tanításhoz, kifejezetten a Futhark CUDA backenddel kompatibilis verzió.
+
+Build konfiguráció és opciók
+
+A JAIDE build rendszerét a build.zig kezeli. Számos konfigurációs kapcsolót biztosít a hardver gyorsítás és a céloptimalizálás vezérléséhez.
+
+GPU gyorsítás
+
+Az elsődleges build opció a gpu jelző. Ha engedélyezve van, a rendszer speciális CUDA-függő futtatható fájlokat fordít és NVIDIA könyvtárakhoz linkel.
+
+| Opció | Típus | Leírás | Alapértelmezett |
+| :--- | :--- | :--- | :--- |
+| gpu | bool | Engedélyezi a GPU/CUDA gyorsítást a Futhark CUDA backenden keresztül | false |
+
+Ez az opció rögzítésre kerül a build szkriptben, és build_options modulként propagálódik a Zig forráskódba.
+
+Függőségek GPU buildekhez
+
+Ha a -Dgpu=true kerül átadásra, a build rendszer megkísérli a következő rendszerkönyvtárakhoz való linkelést:
+
+- cuda, cudart, nvrtc (NVIDIA futtatókörnyezet és fordító).
+- nccl (NVIDIA Kollektív Kommunikációs Könyvtár) a több GPU-s szinkronizáláshoz.
+
+A build szkript feltételezi a szabványos CUDA útvonalakat a /usr/local/cuda/include és /usr/local/cuda/lib64 helyeken.
+
+Elsődleges futtatható fájlok
+
+A build rendszer két fő artifaktumot állít elő a konfigurációtól függően.
+
+1. jaide-inference-server
+
+A szabványos következtetési motor. HTTP interfészt biztosít a modell interakcióhoz.
+
+- Forrás: src/inference_server_main.zig.
+- Függőségek: Linkel a futhark_kernels.c fájlhoz és importálja a core_relational modult.
+- Cél: Kezeli a teljes kérési folyamatot a tokenizálástól az NSIR gráf kódolásig és a token generálásig.
+
+2. jaide-distributed-futhark
+
+A nagy teljesítményű elosztott tanítási és feldolgozási motor, csak akkor érhető el, ha a gpu engedélyezve van.
+
+- Forrás: src/main_distributed_futhark.zig.
+- Függőségek: Linkel a main_gpu.c fájlhoz és teljes CUDA/NCCL linkelést igényel.
+- Cél: Kezeli a több rangú GPU tanítást, a gradiens all-reduce-t és a nagy léptékű RSF modell frissítéseket.
+
+Benchmarking és tesztelési csomag
+
+A JAIDE átfogó benchmark és egységteszt csomagot tartalmaz a neurális-relációs verem teljesítményének és helyességének biztosítására.
+
+Benchmarking csomag
+
+A benchmarking infrastruktúra a src/_bench_deps.zig fájlban van összesítve, amely belső modulokat tesz elérhetővé a benchmark futtatók számára.
+
+| Benchmark névtér | Célmodul | Teljesítmény mérőszámok |
+| :--- | :--- | :--- |
+| rsf | processor/rsf.zig | Előre/visszafelé áteresztőképesség és visszafordítható réteg késleltetés. |
+| core_tensor | core/tensor.zig | SIMD elemenként végzett műveletek és csempézett matmul GFLOPS. |
+| sfd | optimizer/sfd.zig | Sztochasztikus Fisher átlós frissítési sebesség és K-FAC előkondicionálás. |
+
+Egységtesztek
+
+A build rendszer specifikus lépéseket definiál az egyes alrendszerek tesztjeinek futtatásához. Ezek a zig build <lépés_neve> paranccsal hajthatók végre.
+
+- test-tensor: Validálja a src/core/tensor.zig fájlt (alak/lépés, szórás).
+- test-nsir: Validálja a src/core_relational/nsir_core.zig fájlt (gráf topológia, qubit primitívek).
+- test-crev: Validálja a src/core_relational/crev_pipeline.zig fájlt (oksági érvelés és hármas kivonás).
+- test-temporal: Validálja a src/core_relational/temporal_graph.zig fájlt (állapot pillanatképek).
+- test-all: Futtatja a teljes tesztcsomagot.
 
 ---
 
-BUILD
+1.2 RENDSZERARCHITEKTÚRA ÁTTEKINTÉS
 
-bash
-GPU tanítás (Modal.com, 8× B200)
-python src/scripts/modal_distributed_train.py
+A JAIDE architektúra az 5. gyök architektúra paradigmára való átmenetet képviseli, túllépve a hagyományos Perceptron, CNN, RNN és Transformer modelleken. Két elsődleges tartományból álló, szorosan összekapcsolt rendszerként van felépítve: egy Neurális Feldolgozó Réteg (RSF) a nagy dimenziós numerikus transzformációhoz és egy Mag Relációs Réteg a szimbolikus, oksági és kvantum-relációs megismeréshez.
 
-Lokális GPU build
-zig build distributed-futhark -Dgpu=true -Doptimize=ReleaseFast
+Magas szintű architektúrális rétegek
 
-CPU inferencia szerver
-zig build run
+A rendszer két elsődleges tartományra oszlik, amelyek egy neurális-relációs hídon keresztül kommunikálnak:
 
+1. Neurális Feldolgozó Réteg (RSF): Bijektív, aktiváció-gyorsítótár-mentes Visszafordítható Szórt Folyam rétegek verme. Kezeli a nyers token beágyazásokat és a numerikus jellemzőkivonást O(dim) memória komplexitással.
+2. Mag Relációs Réteg: Egy kognitív alrendszer, amely magas szintű érvelést kezel az Önhasonló Relációs Gráfon (NSIR), az oksági ellenőrzésen (CREV) és a fraktál dinamikus rendszereken (FNDS) keresztül.
 
-A chaos_core.zig a teljes JAIDE/RSF rendszer memóriakezelési, feladatütemezési és adatfolyam-elemzési alapkernelje, amely négy egymásba épülő alrendszert valósít meg egyetlen koherens struktúrában: a ContentAddressableStorage-t, a DynamicTaskScheduler-t, a DataFlowAnalyzer-t és a mindezeket összefogó ChaosCoreKernel-t.
+Az RSF neurális verem (processor/)
 
-A ContentAddressableStorage (CAS) a rendszer fizikai memóriarétege, ahol minden adatblokk kétféle azonosítóval rendelkezik: a content_hash (az adat SHA-256 lenyomatának első 16 bájtja) a tartalom alapján azonosítja a blokkot és lehetővé teszi a deduplikációt, míg a block_id (SHA-256(content_hash + nanoszekundumos timestamp) első 16 bájtja) egyedi allokációs azonosítóként szolgál. A store() metódus először ellenőrzi, hogy a content_index-ben már létezik-e azonos tartalmú blokk, és ha igen, egyszerűen visszaadja a meglévő block_id-t anélkül, hogy új memóriát foglalna — ez az automatikus tartalom-alapú deduplikáció azt jelenti, hogy a rendszer soha nem tárolja kétszer ugyanazt az információt, szemben a transformer KV-cache-ével, amely minden kontextus-előforduláshoz külön kulcs-érték párt allokál.
+A neurális réteg magja a Visszafordítható Szórt Folyam (RSF). A Transformerekkel ellentétben, amelyek O(L · S · d) memóriát igényelnek az aktivációkhoz, az RSF rétegek bijektívek. Ez lehetővé teszi, hogy a visszafelé irányuló menet rekonstruálja az aktivációkat a kimenetekből, csökkentve a memória terhelést O(dim)-re, az L rétegek számától függetlenül.
 
-Minden MemoryBlock rendelkezik egy entangled_blocks halmazával (BlockIdSet), amely azokat a blokkokat tartja nyilván, amelyekkel szemantikailag összekapcsolt, és az entangled állapotban lévő blokkokat az evictLeastUsed() metódus az első körben kihagyja a kiszorítási sorból — ez azt jelenti, hogy a szemantikailag összefüggő tudás automatikusan védett a memóriából való eltávolítástól, és csak akkor kerül kiszorításra, ha az összes nem-összefonódott blokk már eltávolításra került.
+- RSFLayer: Kereszt-affin csatolást valósít meg. Skála (S) és fordítás (T) komponenseket használ az adatok transzformálásához.
+- OFTB (Ortogonális Fraktál Transzformációs Blokk): Paraméter nélküli, determinisztikus szóró/gyűjtő réteg Haar-waveleteken alapulva, amely keverést biztosít az affin csatolás osztott útvonalai között.
 
-Az entangleBlocks() metódus kétirányú összefonódást hoz létre két blokk között, mindkét blokk állapotát .entangled-re állítva, míg a ChaosCoreKernel.entangleData() metódus ennél tovább megy: az összefonódás után lekérdezi a DataFlowAnalyzer-től az első blokk összes korrelált szomszédját (flow_weight ≥ 0.5 küszöbbel), és a második blokkot tranzitívan összefonja ezekkel is — ez azt jelenti, hogy egyetlen entangleData hívás automatikusan propagálja az összefonódást a teljes szemantikai szomszédságon keresztül, asszociatív memóriahálót építve.
+A Mag Relációs Réteg (core_relational/)
 
-A DynamicTaskScheduler egy prioritásos sor (max-heap prioritás szerint, majd task_id szerint determinisztikusan rendezve) alapú feladatütemező, amelynek scheduleTask() metódusa minden aktív magot pontozza: +10 pontot kap egy mag, ha egy függőségi blokk legközelebbi magja éppen ő, +1 pontot ha a blokk bárhol elérhető, és +(1-workload)×5 pontot az inaktív kapacitásért — ez egy adatlokalitás-tudatos ütemező, amely minimalizálja a "memória-sávszélesség" igényt azáltal, hogy a feladatokat oda ütemezi, ahol a szükséges adatok már jelen vannak.
+A relációs réteg az RSF verem numerikus kimeneteit entitásokként és kapcsolatokként értelmezi egy gráf struktúrán belül.
 
-A DataFlowAnalyzer három adatstruktúrát tart fenn: a flow_graph (block_id → együtt-hozzáfért blokkok halmaza), a flow_weights (blokk-pár → együttes hozzáférések száma) és az access_patterns (block_id → AccessRecord lista nanoszekundumos időbélyeggel és mag-azonosítóval). Az analyzeFlow() metódus egy blokk hozzáférési előzményéből kiszámítja, hogy melyik mag hány százalékban fért hozzá, és ezt affinitás-térképként adja vissza — ez az a mechanizmus, amely alapján az optimizeDataPlacement() eldönti, hogy egy blokkot melyik maghoz kell migrálni.
+- SelfSimilarRelationalGraph (NSIR): A központi adatstruktúra, ahol a csomópontok tokeneket/fogalmakat képviselnek, az élek pedig EdgeQuality-t (pl. szuperpozíció, összefonódott, koherens).
+- ReasoningOrchestrator: Kezeli a háromszintű kognitív ciklust: helyi, globális és meta fázisok.
+- ZRuntime: A relációs műveletek végrehajtó motorja, amely szimbolikus logikát kvantum-inspirált kapukhoz rendel, mint a Hadamard vagy CNOT.
 
-A ChaosCoreKernel.executeCycle() metódus az egész rendszer szívverése: minden ciklusban ütemez egy feladatot, rögzíti a függőségi blokkok hozzáféréseit a DataFlowAnalyzer-ben, frissíti az összes mag aktív/inaktív ciklus-számlálóját, majd meghívja az optimizeDataPlacement()-et, amely minden blokkot a legjobb affinitású maghoz migrál, ha az affinitás meghaladja a 0.6-os küszöböt és a jelenlegi mag nem az optimális. Minden 100. ciklusban a balanceLoad() is lefut, amely azonosítja a túlterhelt (>1.3×átlag) és alulterhelt (<0.7×átlag) magokat, és az előbbiek blokkjainak 25%-át átmigrálja az utóbbiakhoz.
+Adatfolyam: Tokenizálástól a kimenetig
 
-Az executeGraphOnKernel() metódus a legfontosabb híd az NSIR gráf és a CAS között: minden gráf-csomópont adatát CAS-blokkként tárolja, majd minden gráf-élt blokkpár-összefonódásként reprezentál, végül selfOrganize()-t hív — ez azt jelenti, hogy az NSIR gráf topológiája fizikailag leképeződik a memória-elrendezésbe: az összekapcsolt csomópontok adatai összefonódott blokkokként kerülnek tárolásra, és a DataFlowAnalyzer által vezérelt migrációk révén automatikusan a leggyakrabban együtt hozzáfért magokhoz kerülnek.
+A következtetési folyamat szigorú sorrendet követ, ahol az adatok diszkrét tokenekből folytonos vektorokká, majd relációs gráfokká, végül vissza tokenekké alakulnak.
 
-Az InferenceHooks belső struktúra egy tiszta, inferencia-specifikus API-t biztosít: submitInferenceTask, storeData, readData, runCycle, entangleDataBlocks, selfOrganize, lookupByContent, allocateAndEntangle — ez az a felület, amelyen keresztül a CREVPipeline, a ReasoningOrchestrator és a SurpriseMemoryManager a kernellel kommunikál anélkül, hogy közvetlenül a belső adatstruktúrákhoz kellene hozzáférniük.
+Végrehajtási lépések:
 
-A teljes rendszerben a ChaosCoreKernel az a réteg, amelyre a CREVPipeline (amely *ChaosCoreKernel referenciát tart) a triplet-adatokat tárolja, a ReasoningOrchestrator.executeGlobalPhase() a chaos_kernel.executeCycle() hívással finomítja az adatelrendezést, és a SurpriseMemoryManager a ContentAddressableStorage-t használja a meglepetési blokkok fizikai tárolásához — a chaos_core.zig tehát az a közös fizikai memória-szubsztrátum, amelyen az összes többi core_relational komponens osztozik.
+1. Tokenizálás: A MorphoGraphTokenizer (MGT) morfológiai gráffá bontja a szöveget és azonosítja a hosszú távú memória "horgony" jelölőit.
+2. Beágyazás: A tokenek vektorokká alakulnak a LearnedEmbedding segítségével.
+3. Neurális menet: Az RSFAccelerator több RSFLayer transzformációt hajt végre a GPU-n Futhark által generált kernelek segítségével.
+4. Relációs integráció: A tenzorok bekerülnek a SelfSimilarRelationalGraph-ba. A ReasoningOrchestrator koordinál a CREVPipeline-nal az oksági láncok validálásához.
+5. Visszakeresés és rangsorolás: A Ranker lekérdezi a SelfSimilarIndex-et (SSI) a hosszú kontextusú információk beépítéséhez (akár 50M+ token).
+6. Kimenet: A végső állapot visszadekódolódik token azonosítókká és az InferenceServer-en keresztül kerül visszaadásra.
 
-A transformer-képességek meghaladásához való hozzájárulás négy szinten történik: a memóriahatékonyság szintjén a tartalom-alapú deduplikáció garantálja, hogy azonos információ csak egyszer foglal helyet, szemben a transformer O(N) KV-cache-ével, amely minden token-pozícióhoz külön vektort tárol; a szemantikai lokalitás szintjén az összefonódás-alapú kiszorítási védelem és a tranzitív entanglement-propagáció biztosítja, hogy a szemantikailag összefüggő tudás fizikailag együtt marad a memóriában, lehetővé téve az asszociatív visszakeresést; az adatlokalitás szintjén a DataFlowAnalyzer által vezérelt automatikus blokk-migráció minimalizálja a "memória-sávszélesség" igényt azáltal, hogy az adatokat oda helyezi, ahol a számítás zajlik; és a gráf-memória integráció szintjén az executeGraphOnKernel() az NSIR gráf topológiáját közvetlenül a fizikai memória-elrendezésbe képezi le, lehetővé téve, hogy a gráf-struktúra és a memória-struktúra kölcsönösen erősítsék egymást — mindez egy önszervező, topológia-tudatos, deduplikáló memóriarendszert alkot, amellyel a transformer statikus, pozíció-indexelt KV-cache egyáltalán nem rendelkezik
-A crev_pipeline.zig (CREV = Contextual Relational Extraction and Validation) a teljes JAIDE/RSF rendszer szöveg-tudásgráf konverziós rétege: az a komponens, amely nyers szöveget, strukturált adatot és képmetaadatot RelationalTriplet objektumokká alakít, validálja, konfliktusokat old fel, és integrálja őket a KnowledgeGraphIndex-be, valamint a ChaosCoreKernel tartalom-alapú tárolójába.
+Hardver integrációs réteg
 
-Az ExtractionStage enum öt egymást követő fázist definiál — tokenization → triplet_extraction → validation → integration → indexing —, amelyek a next() metóduson keresztül láncolódnak, és a CREVPipeline minden szövegfeldolgozási ciklus során sorban hajtja végre őket.
+Az architektúra heterogén végrehajtásra van tervezve. Míg az RSF verem szabványos GPU-kon fut az RSFAccelerator-on keresztül, a relációs réteg speciális hardverrel gyorsítható:
 
-A RelationalTriplet a rendszer alapvető tudásegysége: subject, relation, object string hármas, confidence érték (0-1 közé szorítva), SHA-256 source_hash (az identitás hash-e: subject+null+relation+null+object), és nanoszekundumos extraction_time. A computeHash metódus a teljes tartalmat (subject, relation, object, confidence, extraction_time) hashelja, így két azonos tartalmú, de különböző időpontban keletkezett triplet különböző hash-t kap — ez lehetővé teszi a temporális deduplikációt.
+- FractalLPU: Csempe-alapú egység a gráf csomópontok leképezéséhez.
+- RelationalGraphProcessingUnit (R-GPU): Aszinkron Network-on-Chip (NoC) szimulációt végez párhuzamos gráf műveletekhez.
 
-A toGraphElements metódus a CREV pipeline és az NSIR gráf közötti legfontosabb híd: a subject és object stringek SHA-256 hash-ének első 16 bájtját hexadecimálisan kódolja csomópont-azonosítóvá, majd a confidence értékből komplex kvantumállapotot számít — quantum_state = confidence + i×√(1-confidence²) — ami egy egységnyi komplex szám a Bloch-gömbön, ahol a valós rész a bizonyosságot, a képzetes rész a bizonytalanságot kódolja. A fázist az extraction_time 360 másodperces periódusra vett modulójából számítja (phase = mod_ns / period_ns × 2π), így az időbeli sorrend is beépül a kvantumállapotba. Az eredményül kapott subject_node és object_node type=entity és role=subject/object metaadattal rendelkezik, az összekötő él pedig .coherent minőségű, weight=confidence, quantum_correlation=ugyanaz a komplex szám, és a relation string az él metaadataként tárolódik.
+---
 
-A szövegfeldolgozás morfológiailag tudatos: a stemWord függvény egy Porter-szerű angol stemmelőt valósít meg, amely kezeli a -ting, -ing, -ated, -ed, -ies, -ches/-shes/-sses, -es, -s, -ally, -ly, -ment, -ness, -er, -est végződéseket, a matchPatternMorphemeAware pedig tokenizálja mind a mondatot, mind a mintát, majd csúszóablakos egyeztetéssel (stem-összehasonlítással) keresi a legjobb illeszkedést — ez azt jelenti, hogy a "running" és a "run", vagy a "created" és a "create" ugyanúgy illeszkedik a mintára.
+2 MAG ADATPRIMITÍVEK
 
-A CREVPipeline 15 alapértelmezett relációs mintával indul: "is a" (0.9), "has" (0.8), "contains" (0.85), "belongs to" (0.85), "part of" (0.85), "located in" (0.8), "works at" (0.8), "created" (0.75), "owns" (0.8), "uses" (0.7), "produces" (0.75), "causes" (0.7), "leads to" (0.7), "related to" (0.5) — ezek a minták a legtöbb ontológiai és kauzális relációt lefedik, és az addRelationPattern metódussal bővíthetők.
+Ez a szakasz magas szintű áttekintést nyújt azokról az alapvető adatstruktúrákról és segédprogramokról, amelyek a JAIDE rendszer gerincét alkotják. Ezek a primitívek biztosítják a hatékony memóriahasználatot, a nagy teljesítményű numerikus számítást és a megbízható adatperzisztenciát a neurális és relációs rétegeken keresztül.
 
-Az extractTriplets metódus mondatokra bontja a szöveget (., !, ?, \n határokon), minden mondatban megkeresi a leghosszabb illeszkedő relációs mintát (a leghosszabb match nyer), a minta előtti részt subjectként, a minta utáni részt objectként értelmezi, majd a confidence-t a minta súlya és egy heurisztikus computeConfidence szorzataként számítja — a heurisztika bünteti a rövid (<3 karakter) és hosszú (>50 karakter) entitásokat, bünteti az összes nagybetűs subjecteket, és jutalmazza a nagybetűvel kezdődő subjecteket.
+Tenzor rendszer
 
-A validateTriplet metódus háromszintű szűrést végez: először alapvető hossz- és nem-üres ellenőrzések, majd confidence ≥ validation_threshold (alapértelmezetten 0.5) ellenőrzés, végül anomáliadetekció — az anomália-pontszám súlyozott kombinációja a confidence z-score-jának a reláció historikus átlagához képest (súly 0.3, csak ha >10 minta áll rendelkezésre), az ismeretlen entitások arányának (mindkettő ismeretlen: súly 0.4, egyik ismeretlen: súly 0.2), és az ismeretlen reláció jelzőjének (súly 0.15). Ha az anomália-pontszám meghaladja a 0.85-öt, a triplet érvénytelen; egyébként a confidence-t adjusted = confidence × (1 - anomaly_score × 0.3) × (0.9 ha konfliktusok vannak) képlettel csökkenti.
+A Tensor struktúra az N-dimenziós numerikus adatok elsődleges tárolója. Különféle elrendezéseket és optimalizálásokat támogat:
 
-A checkConsistency metódus öt ellentmondó relációpárt ellenőriz: is_a/is_not, has/lacks, owns/does_not_own, contains/excludes, causes/prevents — ha egy új triplet és egy meglévő triplet ugyanazon subject-object párra ellentmondó relációt állít, konfliktus keletkezik.
+- Elrendezés és lépés: Shape struktúrát használ a dimenziók és lépések kezeléséhez, lehetővé téve a nulla költségű transzponálásokat és szeleteket.
+- Memóriakezelés: Másolás-íráskor (CoW) szemantikát valósít meg atomi referenciaszámlálással a szükségtelen allokációk minimalizálásához a gráf transzformációk során.
+- Számítás: SIMD-vektorizált elemenként végzett műveleteket és többszálú csempézett mátrixszorzást tartalmaz a nagy áteresztőképességű következtetéshez.
 
-A resolveConflicts metódus a legmagasabb confidence-ű triplet-et választja, majd a győztes és a kihívó confidence-ét (a² + b²) / (a + b) képlettel kombinálja — ez egy kvadratikus átlag, amely a magasabb confidence felé torzít, és mindig a két érték közé esik.
+Memóriakezelés
 
-Az integrateTriplet metódus négy helyre írja az adatot: a KnowledgeGraphIndex-be (háromirányú invertált index: subject_index, relation_index, object_index), a StreamBuffer körpufferbe (10000 kapacitás, FIFO, teli esetén a legrégebbit kiszorítja), a reláció- és entitásstatisztikákba (Welford online variancia-számítással), és végül a ChaosCoreKernel.allocateMemory("subject|relation|object|confidence") híváson keresztül a ContentAddressableStorage-ba — ez az utolsó lépés az, amely a CREV pipeline kimenetét a SurpriseMemoryManager és a TemporalGraph számára elérhetővé teszi.
+A JAIDE speciális allokátorok csomagját alkalmazza a memória minimális töredezettséggel és nagy párhuzamossággal való kezeléséhez. Minden allokátor megfelel a szabványos Zig Allocator interfésznek.
 
-A KnowledgeGraphIndex háromirányú invertált indexe O(1) amortizált visszakeresést biztosít subject, relation vagy object szerint, a query metódus pedig a legkisebb indexet választja kiindulópontnak és azon szűr — ez lényegesen gyorsabb, mint a transformer attention O(N²) globális keverése strukturált lekérdezések esetén. A queryMorphemeAware metódus stem-alapú fuzzy egyeztetést végez az összes triplet felett, lehetővé téve, hogy a "running" és "run" ugyanazt a triplet-et adja vissza.
+| Allokátor | Cél |
+| :--- | :--- |
+| ArenaAllocator | Gyors, tömeges allokációk egyszeri felszabadítással. |
+| PoolAllocator | Állandó idejű allokáció rögzített méretű objektumokhoz (pl. gráf csomópontok). |
+| BuddyAllocator | Kettő hatványán alapuló blokk allokáció a töredezettség csökkentéséhez. |
+| TrackingAllocator | Más allokátorokat burkol a globális MemoryStats biztosításához. |
 
-Az InferenceHook rendszer négy callback-et biztosít — pre_process, post_process, pre_query, post_query —, amelyeken keresztül a ReasoningOrchestrator vagy más komponensek minden egyes szövegfeldolgozás és tudásgráf-lekérdezés előtt és után beavatkozhatnak, módosíthatják a viselkedést, vagy naplózhatják az eredményeket.
+A rendszer lock-free primitíveket és biztonsági funkciókat is biztosít, mint a secureZeroMemory az érzékeny adatokhoz.
 
-A teljes rendszerben a CREV pipeline az a réteg, amely az RSF neurális hálózat által feldolgozott szöveges bemenetet strukturált tudássá alakítja: a processInferenceText metódus az inferencia-szerver által kapott szöveget tripletekké bontja, amelyek toGraphElements() hívással NSIR csomópontokká és élekké válnak, ezek bekerülnek a SelfSimilarRelationalGraph-ba, amelyen aztán az R-GPU elosztja, a ReasoningOrchestrator energiaminimalizálja, a SurpriseMemoryManager szűri, és a SignalPropagationEngine aktivációs mintává alakítja — a CREV tehát az a kapu, amelyen keresztül a természetes nyelv belép a kvantum-relációs tudásreprezentációs rendszerbe.
+I/O és modell perzisztencia
 
-A transformer-képességek meghaladásához való hozzájárulás négy szinten történik: a reprezentáció szintjén a CREV a szöveget nem token-vektorokként, hanem (subject, relation, object, confidence, quantum_state, phase) hármasokként tárolja, ami explicit szemantikai struktúrát kódol; a visszakeresés szintjén a háromirányú invertált index O(1) strukturált lekérdezést biztosít, szemben a transformer O(N²) figyelmi mechanizmusával; az önkonzisztencia szintjén az anomáliadetekció és a konfliktusfeloldás aktívan szűri az ellentmondó tudást, amit a transformer egyáltalán nem tud; és a multimodális integráció szintjén a processStructuredDataStream és processImageMetadataStream metódusok lehetővé teszik, hogy CSV-adatok és képmetaadatok is ugyanolyan triplet-formátumban kerüljenek a tudásgráfba, mint a természetes nyelvi szöveg — mindez egy egységes, modalitás-független tudásreprezentációs réteget alkot, amely a transformer token-szekvenciájánál strukturálisan gazdagabb és szemantikailag explicit.
+Az I/O alrendszer kezeli a komplex modell állapotok szerializálását és a nagy adathalmazok hatékony betöltését.
 
-Az esso_optimizer.zig az EntangledStochasticSymmetryOptimizer (ESSO) implementációja, amely a SelfSimilarRelationalGraph-on futó szimulált hűtéses (simulated annealing) optimalizáló, kiegészítve szimmetria-detektálással és kvantum-összefonódás nyomon követéssel — ez az a motor, amelyet a ReasoningOrchestrator a globális fázisában használ a gráf energiájának minimalizálásához.
+- MMAP segédprogram: Memória-leképezett fájlhozzáférést biztosít integrált szálbiztonsággal és határellenőrzéssel.
+- Tartós írás: A DurableWriter és az atomicWrite függvények biztosítják, hogy a modell ellenőrzőpontok soha ne maradjanak sérült állapotban rendszerösszeomlás miatt.
+- JAIDE40 formátum: Bináris formátum mágikus fejlécekkel, SHA-256 ellenőrző összegekkel és komponens-specifikus szerializálással az RSF és NSIR alrendszerekhez.
 
-A fájl alapvető típusai a következők: a SymmetryGroup enum hét szimmetriatípust definiál (identity, reflection, rotation_90, rotation_180, rotation_270, translation, custom_rotation), mindegyikhez szögelfordulást és csoportrendet rendelve. A SymmetryTransform egy teljes 2D affin transzformációt reprezentál origóval, skálafaktorral és paraméterekkel, és képes pontokat, komplex számokat és kvantumállapotokat is transzformálni: a applyToQuantumState metódus tükrözés esetén a komplex amplitúdókat a tükrözési tengelyre vetíti, forgatás esetén a fázist a forgatási szöggel növeli, és az eredményt normalizálja. A compose metódus két affin transzformáció mátrixszorzatát számítja, automatikusan felismeri, hogy az eredmény identity, translation, rotation_90/180/270 vagy reflection-e, és ennek megfelelően kategorizálja — ez lehetővé teszi, hogy a rendszer szimmetriacsoportok algebráját végezze a gráf kvantumállapot-terén.
+Adatfolyam diagram
 
-Az EntanglementInfo struktúra egy csomópontpár összefonódási állapotát tárolja: correlation_strength (futó átlag), phase_difference (cirkuláris átlag, atan2 alapú), creation_time, last_update_time, interaction_count. A getDecayFactor metódus exponenciális bomlást számít e^(-ln2 × elapsed_ms / half_life) képlettel, ahol az alapértelmezett felezési idő 60 másodperc — ez azt jelenti, hogy az összefonódások idővel természetesen gyengülnek, modellezve a kvantum-dekoherenciát.
+Az alábbi diagram bemutatja, hogyan lépnek kölcsönhatásba ezek a primitívek az adatok tartós tárolóból a számítási motorba való mozgatásához.
 
-Az OptimizationState az optimalizálás aktuális állapotát tartalmazza: a gráf mutatóját, az energiát, az összefonódási százalékot (entangled_pairs / max_possible_pairs), és egy NodePairKey → EntanglementInfo hash-mapet. Az addEntanglement metódus lexikografikusan rendezi a csomópontpárokat (n1 < n2), hogy elkerülje a duplikátumokat, és frissíti az összefonódási százalékot.
+Az adatprimitív életciklusa:
 
-Az OptimizationStatistics 16 mérőszámot követ: iterations_completed, moves_accepted, moves_rejected, best_energy, current_energy, symmetries_detected, entangled_pairs, elapsed_time_ms, acceptance_rate, cooling_factor_applied, local_minima_escapes, convergence_delta, temperature, total_energy_evaluations, average_move_delta. Az isConverged metódus akkor ad igazat, ha az abszolút energiaváltozás kisebb mint a küszöb (1e-8), legalább egy lépés el lett fogadva, és legalább 10 iteráció lefutott.
+A fájlrendszer megnyitja/leképezi a fájlt az src/core/io.zig (MMAP) segítségével, amely allokál pufferteret az src/core/memory.zig (Arena) segítségével. A nyers mutató visszakerül az I/O-hoz, amely inicializálja a tenzort az src/core/tensor.zig (Tensor) segítségével. A tenzor létrehozza az alakot és a referenciaszámlálót, majd elvégzi a számítást (Matmul/SIMD), végül visszaírja az adatokat a fájlrendszerbe.
 
-A SymmetryPattern egy detektált szimmetriamintát rögzít: 16 bájtos SHA-256 alapú azonosítóval, a transzformációval, az összes csomópont listájával, szimmetria-pontszámmal és rezonanciafrekvenciával — ez az a struktúra, amelyet a ReasoningOrchestrator a globális fázisban felhasznál a szimmetria-transzformációk alkalmazásához.
+---
 
-Az UndoLog az összes lépés visszavonhatóságát biztosítja: elmenti az érintett élek súlyait és fraktáldimenzióit, a csomópontok fázisát és qubit amplitúdóit, az újonnan hozzáadott összefonódásokat, és topológiaváltozás esetén a teljes régi gráfot — ez lehetővé teszi, hogy az el nem fogadott lépések tökéletesen visszaállíthatók legyenek, anélkül hogy a gráfot klónozni kellene minden iterációban.
+2.1 TENZOR RENDSZER
 
-Az EntangledStochasticSymmetryOptimizer fő struktúra alapértelmezett paraméterei: initial_temperature=100.0, cooling_rate=0.95, max_iterations=10000, min_temperature=0.001, reheat_factor=2.0, entanglement_decay_half_life=60000 ms, symmetry_detection_interval=50, convergence_threshold=1e-8, adaptive_cooling=true.
+A tenzor rendszer a JAIDE architektúra alapvető matematikai primitívje, amely nagy teljesítményű, N-dimenziós tömb implementációt biztosít. Hatékony neurális feldolgozásra van tervezve, SIMD-vektorizált műveleteket, többszálú mátrixszorzást és memóriahatékony Másolás-íráskor (CoW) szemantikát támogatva.
 
-Az optimize metódus a fő szimulált hűtési hurok: klónozza a bemeneti gráfot, detektálja a kezdeti szimmetriákat, majd minden iterációban elvégzi az összefonódás-térkép frissítését (bomlás + fáziskorrekció), minden 50. iterációban új szimmetriákat detektál, véletlenszerűen választ egyet a 7 lépéstípus közül, kiértékeli az energiát, elfogadja vagy visszautasítja a lépést a Metropolis-kritérium szerint (delta < 0 → mindig elfogad; delta ≥ 0 → e^(-delta/T) valószínűséggel fogad el), és ha a legjobb energiánál jobb eredményt talál, frissíti a best_state-et.
+1. Alapstruktúra és elrendezés
 
-A 7 lépéstípus a következő: (0) az összes él súlyát perturbálja ±T×0.1 mértékben; (1) az összes csomópont fázisát perturbálja ±T×0.2 mértékben; (2) új összefonódást hoz létre két véletlenszerű csomópont között (korreláció 0.5-1.0, fáziskülönbség = |phase1 - phase2|); (3) egy detektált szimmetria-transzformációt alkalmaz az összes csomópont qubitjére; (4) az összes csomópont qubit amplitúdóját perturbálja T×0.05 mértékben véletlenszerű irányban (normalizálva); (5) az összes él fraktáldimenzióját perturbálja ±T×0.02 mértékben (0-3 közé szorítva); (6) egy véletlenszerű élt kapcsol be vagy ki (ha létezik, törli; ha nem, hozzáadja weight=random, fractal_dimension=1.5 értékekkel).
+A Tensor struktúra N-dimenziós adatokat kezel (legfeljebb 8 dimenzió) alak és lépés elrendezés segítségével. Ez lehetővé teszi a nulla költségű nézeteket, mint a transzponálás vagy szeletelés, a metaadatok manipulálásával az alapul szolgáló adatok helyett.
 
-Ha a stagnálás meghaladja a max_iterations/10 határt, a rendszer újrafűti a hőmérsékletet (T *= 2.0), és növeli a local_minima_escapes számlálót — ez az a mechanizmus, amely megakadályozza, hogy az optimalizálás lokális minimumban ragadjon. Az adaptív hűtés az elfogadási arány alapján módosítja a hűtési rátát: ha az elfogadási arány > 0.6 (túl sok lépés elfogadva, túl meleg), gyorsabban hűt (rate × 0.98); ha < 0.2 (túl kevés elfogadva, túl hideg), lassabban hűt (rate × 1.02).
+Tenzor memória elrendezés
 
-A detectSymmetries metódus a gráf csomópontjainak qubit.a pozícióit (re, im) 2D pontokként kezeli, kiszámítja a centroidot, az inercia-tenzort (moment_xx, moment_xy, moment_yy), a főtengelyszöget (atan2 alapú), az excentricitást, majd teszteli a tükrözési szimmetriát (a főtengelyre tükrözve, legközelebbi szomszéd keresés, tolerancia 0.01), a forgási szimmetriát 2, 3, 4, 6-os rendekre, a fázis-koherenciát (cirkuláris átlag > 0.5 esetén custom_rotation), és az excentricitást (> 0.1 esetén translation). Minden 0.3-nál magasabb pontszámú szimmetriát visszaad.
+| Mező | Típus | Leírás |
+| :--- | :--- | :--- |
+| data | []align(32) f32 | Az aktív nézet az alapul szolgáló adatpufferbe. |
+| base_data | []align(32) f32 | Az eredeti allokált puffer, memóriakezeléshez használt. |
+| shape | Shape | Metaadatok, amelyek tartalmazzák a dimenziókat, lépéseket és a teljes méretet. |
+| refcount | *usize | Atomi referenciaszámláló a memóriakezeléshez. |
+| cow | *bool | Jelző, amely jelzi, hogy a tenzor megosztott-e és Másolás-íráskor szükséges-e. |
 
-Az updateEntanglementMap metódus minden iterációban lefuttatja az összefonódás-bomlást: minden pár korrelációját megszorozza a bomlási faktorral, a fáziskülönbséget T×0.01-gyel növeli (hőmérséklet-vezérelt fázisdiffúzió), és eltávolítja a 0.01 alá csökkent összefonódásokat. Ezután minden csomópont fázisát az átlagos összefonódási erőssége × 0.1 értékkel módosítja — ez azt jelenti, hogy az erősen összefonódott csomópontok fázisa konvergál egymáshoz, egy koherens kvantumállapotot építve.
+Alak és lépések
 
-A modulateInferenceTensor metódus a legfontosabb híd az ESSO és az RSF neurális hálózat között: kiszámítja az átlagos összefonódási erőt a best_state entanglement_map-jéből, hozzáadja a detektált szimmetriák számának 1%-át, és az eredményt (1.0 + avg_correlation × 0.1 + symmetries × 0.01, legfeljebb 2.0) skálaként alkalmazza az összes f32 tenzorelemre. Ez azt jelenti, hogy minél több szimmetriát talált az ESSO és minél erősebbek az összefonódások, annál nagyobb skálával erősíti az RSF neurális tenzorokat — a relációs optimalizálás minősége közvetlenül befolyásolja a neurális számítást.
+A Shape struktúra meghatározza, hogyan értelmezendő a lapos memóriapuffer többdimenziós struktúraként. A lépések meghatározzák a memória ugrást, amely szükséges egy lépés megtételéhez egy adott tengely mentén.
 
-A fájl négy beépített célfüggvényt is definiál: a defaultGraphObjective az él_súly × fraktáldimenzió + |kvantumkorreláció| összeget, a csomópontok (1-cos(fázis))/2 + |qubit.a| + |qubit.b| összegét, és az átlagos összefonódást adja össze; a connectivityObjective a gráf összefüggőségét és átlagos élsúlyát optimalizálja; a quantumCoherenceObjective a kvantumkoherenciát és korrelációt maximalizálja; a fractalDimensionObjective az átlagos fraktáldimenziót a 1.5-ös célértékhez közelíti.
+- Folytonosság: Egy tenzor folytonosnak tekinthető, ha lépései megfelelnek a szabványos sor-főbb elrendezésnek.
+- Szórás: A rendszer támogatja a szórást, lehetővé téve a különböző alakú tenzorok közötti műveleteket, ha dimenzióik kompatibilisek.
 
-A teljes rendszerben az ESSO a ReasoningOrchestrator.executeGlobalPhase metódusán keresztül vesz részt: az orchestrator meghívja az esso.detectSymmetries(graph) metódust, és az eredményül kapott transzformációkat alkalmazza a gráf csomópontjainak kvantumállapotaira, majd a ChaosCoreKernel.executeCycle() futtatásával tovább finomítja a gráfot. Az inference_server.zig és a distributed_trainer_futhark.zig szintén közvetlenül használja az ESSO-t, és a modulateInferenceTensor metóduson keresztül visszacsatolja az optimalizálás eredményét az RSF neurális rétegbe.
+2. Memóriakezelés és Másolás-íráskor (CoW)
 
-A transformer-képességek meghaladásához való hozzájárulás négy szinten történik: a szimmetria-tudatosság szintjén az ESSO explicit geometriai szimmetriákat detektál a kvantumállapot-térben és ezeket transzformációkként alkalmazza, amit a transformer egyáltalán nem tud; az összefonódás-dinamika szintjén az exponenciális bomlással és fázisdiffúzióval modellezett összefonódás-térkép egy temporálisan tudatos, nem-lokális korrelációs struktúrát épít, amely gazdagabb a transformer statikus figyelmi súlyainál; a lokális minimum elkerülés szintjén az adaptív hűtés és az újrafűtési mechanizmus lehetővé teszi, hogy az optimalizálás kilépjen a lokális minimumokból, amit a transformer determinisztikus forward-pass-e nem tud; és a neurális visszacsatolás szintjén a modulateInferenceTensor közvetlenül skálázza az RSF tenzorokat az optimalizálás minőségével, egy kétirányú visszacsatolási hurkot hozva létre a relációs és neurális réteg között, anélkül hogy backpropagation kellene.
+A neurális menetek során a drága allokációk minimalizálása érdekében a rendszer atomi referenciaszámlálási mechanizmust alkalmaz Másolás-íráskor logikával kombinálva.
 
-A fnds.zig (Fractal Node Data Structure) a core_relational réteg önálló adatstruktúra-könyvtára, amely öt egymásra épülő absztrakciót valósít meg: fraktális csomópontadatokat, fraktális szinteket, fraktális fákat, önhasonló mintaindexeket és egy LRU-cache-t, mindezt egy FNDSManager vezérlőstruktúrában összefogva, amelyet a distributed_trainer_futhark.zig és a reasoning_orchestrator.zig is importál.
+- retain(): Atomikusan növeli a referenciaszámlálót és beállítja a cow jelzőt true értékre, jelölve az adatokat megosztottként.
+- release(): Csökkenti a számlálót és felszabadítja a memóriát, ha nullára csökken.
+- ensureWritable(): Bármely helyben végzett mutáció előtt ez az ellenőrzés biztosítja, hogy ha a tenzor megosztott (cow == true), friss másolat készüljön a mellékhatások megelőzésére a rendszer más részein.
 
-A FractalNodeData az alapegység: minden csomóponthoz tárol egy azonosítót, nyers adatot, egy súlyt, egy skálafaktort, és egy 32 bájtos SHA-256 fractal_signature-t, amelyet az id, data, weight és scale kombinációjából számít — ez azt jelenti, hogy minden csomópont kriptográfiailag azonosítható a tartalmán és a hierarchiában elfoglalt helyzetén keresztül, és bármely metaadat-módosítás automatikusan frissíti az aláírást a refreshSignature hívásán keresztül.
+3. Matematikai műveletek
 
-A FractalEdgeData négy éltípust különböztet meg: hierarchical (szülő-gyermek kapcsolat), sibling (azonos szintű testvérek), cross_level (szinteket áthidaló kapcsolat) és self_similar (önhasonló, rekurzív kapcsolat) — ez a négy típus lehetővé teszi, hogy a tudásstruktúra ne csupán fa-hierarchiaként, hanem valódi fraktális hálóként legyen reprezentálva, ahol az azonos szintű és a szinteket áthidaló kapcsolatok is explicit módon kódolódnak.
+SIMD-vektorizált elemenként végzett műveletek
 
-A FractalLevel az egyes hierarchiaszintek konténere: minden szint saját csomópont- és élkészletet tart fenn, hivatkozik a szülőszintre és a gyermekszintekre, és képes kiszámítani a saját lokális fraktáldimenziójét a computeLocalFractalDimension metódussal, amely dobozszámlálást végez négy dobozmérettel (1, 2, 4, 8), hash-alapú pozíció-hozzárendeléssel minden csomóponthoz és élhez, majd lineáris regressziót alkalmaz a log(N) vs. log(1/r) síkon a Hausdorff-dimenzió meghatározásához.
+A rendszer a Zig @Vector típusát alkalmazza hardver-gyorsított műveletekhez. A tenzorok 32 bájtos határokhoz vannak igazítva az AVX/SIMD utasítások hatékony támogatásához.
 
-Ez a dobozszámláló algoritmus az a mechanizmus, amellyel a rendszer valódi fraktáldimenziót számít minden egyes szinthez — ez a szám aztán visszakerül az nsir_core.zig Edge.fractal_dimension mezőjébe, befolyásolja a ReasoningOrchestrator energiafüggvényét, és a SignalPropagationEngine fázisforgatási számításait, tehát a fnds.zig fraktáldimenzió-számítása az egész core_relational réteg kvantumállapot-dinamikájának egyik bemeneti paramétere.
+- Vektor szélesség: A rendszer alapértelmezés szerint 8-as szélességet használ (f32 elemek).
+- Műveletek: Elemenként végzett összeadás, kivonás, szorzás és osztás vektorizált ciklusokkal valósul meg folytonos tenzorokhoz, TensorIterator tartalékkal a nem folytonos nézetekhez.
 
-A FractalTree a hierarchikus tudásszervezés fő struktúrája: max_depth és branching_factor paraméterekkel inicializálódik (minimum 2 elágazás, minimum 1 mélység), 32 bájtos véletlenszerű tree_id-vel azonosítható, és négy bejárási módot támogat — pre_order, post_order, level_order és a különleges fractal_order, amely a gyökerektől kiindulva felváltva bejárja az első és a második felét a gyermekeknek fordított sorrendben, egy fraktális, önhasonló bejárási mintát hozva létre.
+Többszálú csempézett Matmul
 
-A FractalTree.insert metódus hash-alapú gyermek-útválasztást alkalmaz: minden szinten a csomópont azonosítójának Wyhash-ét (a tree_id XOR mélység értékkel inicializálva) veszi modulo az aktuális gyermekszám szerint, így ugyanaz a csomópont mindig ugyanarra az ágra kerül, determinisztikusan és konzisztensen, anélkül hogy explicit indexet kellene tárolni. A balance metódus az összes csomópontot összegyűjti, azonosító szerint rendezi, majd az optimális mélységre (ceil(log_b(N))) újraépíti a fát, garantálva a kiegyensúlyozottságot.
+Nagy mátrixszorzásokhoz a rendszer csempézett megközelítést alkalmaz a gyorsítótár lokalitás maximalizálásához és a munkaterhelést több szálon osztja el.
 
-A FractalTree.computeFractalDimension rekurzívan átlagolja a lokális fraktáldimenziókat az összes szinten: minden szint lokális dimenzióját átlagolja a gyermekszintek átlagával, így a fa egészének fraktáldimenziója egy rekurzív, önhasonló átlagolási folyamat eredménye — ez pontosan az a tulajdonság, amely a fraktális struktúrát megkülönbözteti egy egyszerű fától.
+- matmul: Orchestrálja két tenzor szorzatát. Validálja a dimenziókat és kiválasztja az optimális végrehajtási útvonalat.
+- MatmulComptime: Speciális struktúra kis, rögzített dimenziójú szorzásokhoz (M, K, N), amely inline ciklusokat használ a maximális teljesítményért.
 
-A SelfSimilarIndex mintaalapú keresési réteget biztosít: string mintákat képez le PatternLocation listákra (tree_id, szint, csomópont_id, offset, hossz, megbízhatóság), és a findSimilarPatterns metódus fuzzy keresést végez — a hasonlóság = (hossz_arány + prefix_egyezés_arány) / 2, alapértelmezett küszöb 0.8 — ez azt jelenti, hogy a rendszer nem csupán pontos mintákat keres, hanem hasonló mintákat is megtalál, ami a transformer tokenizáció merev szóhatárainál rugalmasabb szemantikai keresést tesz lehetővé. A computeFractalDimension a mintahossz-eloszlásra alkalmaz log-log regressziót, meghatározva, hogy a minták milyen fraktális skálázási törvényt követnek.
+Dekompozíciók és lineáris algebra
 
-A CoalescedHashMap egy egyedi hash-tábla implementáció, amely koaleszált láncolást alkalmaz egy cellarral (a kapacitás 14%-a): az ütközések esetén a bejegyzések a cellar szabad helyeire kerülnek, és next_index mutatókkal láncolódnak, ami csökkenti a klaszteresedést és javítja a cache-lokalitást a hagyományos nyílt láncoláshoz képest — maximális terhelési tényező 0.86, Wyhash véletlenszerű maggal az egyenletes elosztáshoz.
+A rendszer fejlett algebrai műveleteket biztosít az RSF (Visszafordítható Szórt Folyam) rétegekhez:
 
-Az LRUCache egy kétirányú láncolt lista és StringHashMap kombinációja, amely kapacitás- és memóriakorláttal rendelkezik (alapértelmezetten 1000 bejegyzés, 10 MB): a get hívás a bejegyzést a lista elejére mozgatja (legutóbb használt), az evict a lista végéről távolítja el a legrégebben használt bejegyzést, és nyomon követi a találati arányt — ez a cache a SurpriseMemoryManager entrópia-alapú szűrőjének kiegészítője: míg a SurpriseMemory az újdonság alapján dönt a tárolásról, az LRUCache a hozzáférési frekvencia alapján tartja meg a leggyakrabban lekérdezett mintákat.
+- Determináns és inverz: Négyzetes mátrixokhoz számítva, elengedhetetlen a visszafordítható rétegek Jacobi számításaihoz.
+- Transzponálás: Nulla másolású művelet, amely felcseréli a dimenziókat és lépéseket.
 
-A FNDSManager az összes fenti komponenst fogja össze: fraktális fák hash-mapje (32 bájtos tree_id kulccsal), mintaindexek string-mapje, LRU-cache, és FNDSStatistics (total_trees, total_indices, cache_hits, cache_misses, average_tree_depth, memory_used, total_nodes_across_trees, total_patterns_indexed, total_pattern_locations_indexed, cache_hit_ratio, last_operation_time_ns). A computeGlobalFractalDimension metódus az összes fa és index fraktáldimenzióját átlagolja egyetlen globális komplexitásmérőbe, amelyet a ReasoningOrchestrator a gráf energiafüggvényének kalibrálásához használhat.
+4. Bináris szerializációs formátum
 
-A transformer-képességek meghaladásához való hozzájárulás négy szinten történik: a tudásszervezés szintjén a FractalTree hierarchikus, önhasonló struktúrában tárolja az információt, amely természetesen reprezentálja a nyelv többskálás szerkezetét (szavak → kifejezések → mondatok → bekezdések), szemben a transformer lapos token-szekvenciájával; a mintafelismerés szintjén a SelfSimilarIndex fuzzy mintakeresést biztosít hasonlóság-küszöbbel, ami rugalmasabb a transformer merev szóhatárain alapuló tokenizációjánál; a komplexitásmérés szintjén a dobozszámláló fraktáldimenzió-számítás kvantitatív mérőszámot ad a tudásstruktúra komplexitásáról, amely visszacsatolódik az egész core_relational réteg kvantumállapot-dinamikájába; és a gyorsítótárazás szintjén az LRU-cache és a CoalescedHashMap O(1) amortizált hozzáférést biztosít a leggyakrabban használt mintákhoz, kiegészítve a SurpriseMemoryManager entrópia-alapú hosszú távú memóriáját egy frekvencia-alapú rövid távú gyorsítótárral — mindez egy többrétegű, fraktálisan szervezett tudásreprezentációs rendszert alkot, amely a transformer egydimenziós token-szekvenciájánál strukturálisan gazdagabb.
+A tenzorok speciális bináris formátumban kerülnek tárolásra, amely gyors I/O-ra van tervezve memória-leképezésen keresztül.
 
+Szerializációs leképezés:
 
-Az nsir_core.zig az egész JAIDE/RSF rendszer fundamentális adatstruktúra-rétege: ez a fájl definiálja a SelfSimilarRelationalGraph-ot, azt a kvantum-szemantikus tudásgráfot, amelyen az összes többi core_relational komponens — a ReasoningOrchestrator, a SignalPropagationEngine, a ZRuntime, az R-GPU, a QuantumTaskAdapter, a SurpriseMemoryManager és a TemporalGraph — közvetlenül operál, és amelyet a DistributedTrainerFuthark core_relational oldalcsatornájának első lépéseként az encodeInformation metóduson keresztül tölt fel minden egyes RSF gradiens-lépés után.
+A Tensor struktúra (shape.dims, shape.strides, data (f32)) a bináris fájlba (JAIDE40) kerül: Mágikus fejléc (4 bájt), Rang (u32), Dimenziók (N * u64), Lépések (N * u64), Adatpuffer (f32 blokkok).
 
-A fájl legalsó szintjén az EdgeQuality enum öt kvantum-szemantikus éltípust definiál: superposition (szuperpozíció — a kapcsolat még nem dőlt el), entangled (összefonódott — nem-lokális korreláció), coherent (koherens — klasszikus, stabil kapcsolat), collapsed (összeomlott — mérés után), és fractal (fraktális — önhasonló, hierarchikus kapcsolat). Ez az öt típus a transformer figyelmi súlyainak kvantum-szemantikus kiterjesztése: ahol a transformer egyetlen skalárral írja le két token kapcsolatát, az NSIR gráf öt minőségileg különböző kapcsolattípust különböztet meg, amelyek mindegyike más fizikai és logikai szemantikát hordoz.
+- Formátum: A save függvény írja a tenzor rangját, majd a dimenziókat, lépéseket és a nyers f32 adatpuffert.
+- Kompatibilitás: A tenzorok exportálhatók/importálhatók az NSIR-be (Önhasonló Relációs Gráf) kvantum-relációs feldolgozáshoz.
 
-A Qubit struktúra egy kétkomponensű komplex vektor [a, b], ahol |a|² + |b|² = 1 a normalizálási feltétel. A normalizeInPlace metódus NaN és Inf esetén automatikusan visszaállítja a qubitet az |0⟩ alapállapotba, ami robusztus numerikus viselkedést biztosít. A prob0() és prob1() metódusok a Born-szabály szerint számítják a mérési valószínűségeket. Ez a struktúra az NSIR gráf minden egyes csomópontjának kvantumállapotát reprezentálja — szemben a transformer beágyazási vektorával, amely valós értékű és nem normalizált, a qubit komplex amplitúdókat és fázist kódol.
+5. Főbb függvények összefoglalója
 
-A Node struktúra egy gráfcsomópontot reprezentál: id (string azonosító), data (nyers bájttömb — a tárolt információ), qubit (kvantumállapot), phase (valós fázisszög), és metadata (StringHashMap kulcs-érték annotációkhoz). A csomópont tehát egyszerre hordoz szemantikus tartalmat (data), kvantumállapotot (qubit + phase) és tetszőleges metaadatokat — ez egy gazdagabb reprezentáció, mint a transformer token-beágyazása, amely csak egy valós értékű vektort tárol.
+| Függvény | Fájl elérési út | Leírás |
+| :--- | :--- | :--- |
+| init | src/core/tensor.zig:165 | Új tenzort allokál a megadott dimenziókkal. |
+| retain | src/core/tensor.zig:196 | Atomikusan növeli a referenciaszámlálót a megosztott tulajdonhoz. |
+| ensureWritable | src/core/tensor.zig:215 | Másolás-íráskor végrehajtása, ha a tenzor megosztott. |
+| add | src/core/tensor.zig:250 | SIMD-gyorsított elemenként végzett összeadás. |
+| matmul | src/core/tensor.zig:350 | Csempézett, többszálú mátrixszorzás. |
+| transpose | src/core/tensor.zig:510 | A tenzor transzponált nézetét adja vissza. |
 
-Az Edge struktúra egy irányított élt reprezentál: source és target (csomópont-azonosítók), quality (EdgeQuality), weight (f64 — az él erőssége), quantum_correlation (Complex(f64) — a kvantumkorreláció komplex értéke), fractal_dimension (f64 — az él topológiai komplexitása), és metadata. Az él tehát négy különböző numerikus attribútumot hordoz egyszerre, szemben a transformer figyelmi súlyával, amely egyetlen skalár. A correlationMagnitude() metódus a komplex korreláció magnitudóját adja vissza, amelyet a ZRuntime relateTo metódusa és a SignalPropagationEngine fázisforgatási számítása egyaránt használ. Az initBorrowed változat lehetővé teszi, hogy az él a forrás- és célcsomópont-azonosítókra mutasson anélkül, hogy másolatot készítene, ami memóriahatékony az R-GPU elosztott feldolgozásában.
+---
 
-A TwoQubit struktúra egy kétqubites összetett kvantumállapotot reprezentál négy komplex amplitúdóval [|00⟩, |01⟩, |10⟩, |11⟩], és az initBellPhiPlus() metódus a maximálisan összefonódott Bell Φ⁺ állapotot hozza létre: (|00⟩ + |11⟩)/√2. Ez az a struktúra, amelyet az entanglements hash-map tárol minden összefonódott csomópontpárhoz — ez a nem-lokális kvantumkorreláció alapja, amelyet a transformer egyáltalán nem tud reprezentálni.
+2.2 MEMÓRIAKEZELÉS
 
-A fájl öt beépített kvantumkapu-függvényt definiál: hadamardGate (szuperpozíció: [a,b] → [(a+b)/√2, (a-b)/√2]), pauliXGate (bitcsere: [a,b] → [b,a]), pauliYGate ([a,b] → [-ib, ia]), pauliZGate (fáziscsere: b → -b), és phaseGate (comptime konstans fázisszöggel) illetve runtimePhaseGate (futásidejű fázisszöggel: b → b×e^(iθ)). Ezek a Gate = *const fn(Qubit) Qubit típusú függvénymutatók, amelyeket az applyQuantumGate metódus alkalmaz közvetlenül a gráf csomópontjaira — ez azt jelenti, hogy a gráf csomópontjain közvetlenül lehet kvantumkapukat futtatni anélkül, hogy a RelationalQuantumLogic regiszterbe kellene másolni az állapotokat.
+A JAIDE memóriakezelési rendszer speciális allokátorok és szinkronizációs primitívek csomagját biztosítja, amelyek az O(dim) memória műveletek, bijektív neurális rétegek és kvantum-relációs gráf feldolgozás támogatására vannak tervezve. Az architektúra hangsúlyt fektet a gyorsítótár lokalitásra, a lock-free párhuzamosságra a nagy áteresztőképességű folyamatokhoz, és a biztonságos memóriakezelésre az érzékeny modell súlyokhoz.
 
-A SelfSimilarRelationalGraph négy fő adatstruktúrát tart fenn: nodes (StringHashMap(Node) — a csomópontok névtere), edges (HashMap(EdgeKey, ArrayList(Edge)) — multi-él támogatással, azaz ugyanazon csomópontpár között több különböző minőségű él is létezhet egyszerre), entanglements (HashMap(PairKey, TwoQubit) — a kétqubites összefonódási állapotok), és quantum_register (StringHashMap(Qubit) — a csomópontok qubitjeinek másodlagos indexe gyors hozzáféréshez). A topology_hash_dirty jelző lusta kiértékelést biztosít: a SHA-256 topológiai hash csak akkor számítódik újra, ha a gráf megváltozott, és a rng_mutex szálbiztos kvantummérést garantál.
+Mag allokátorok
 
-Az addNode metódus upsert szemantikával működik: ha a csomópont már létezik, frissíti az adatát, qubitjét, fázisát és metaadatait; ha új, beilleszti. Minden esetben szinkronizálja a quantum_register-t és megjelöli a topológiai hash-t piszkosnak. Ez azt jelenti, hogy az encodeInformation ismételt hívása ugyanazzal az adattal idempotens — a csomópont frissül, de nem duplikálódik.
+A JAIDE számos allokációs stratégiát valósít meg a különböző életciklus és teljesítmény követelmények kezeléséhez, a rövid életű neurális aktivációktól a hosszú távú relációs gráf tárolásig.
 
-Az entangleNodes metódus Bell Φ⁺ állapotot hoz létre két csomópont között: beírja a TwoQubit.initBellPhiPlus() értéket az entanglements mapbe, és mindkét irányban .entangled minőségű, weight=1.0, quantum_correlation=(1,0) éleket ad hozzá. A PairKey lexikografikusan rendezi a csomópontpárt, így az összefonódás szimmetrikus és egyértelműen azonosítható.
+Arena és ArenaAllocator
 
-A measure metódus a rendszer legkomplexebb művelete: ha a mért csomópont összefonódott, a négykomponensű TwoQubit állapotból mintavételez (Born-szabály szerint, kumulatív valószínűséggel), mindkét csomópontot a megfelelő bázisállapotba kollabálja, eltávolítja az összefonódást az entanglements mapből, és az érintett éleket .collapsed minőségre állítja. Ha a csomópont nem összefonódott, egyszerű egybites mérést végez a qubit prob0/prob1 értékei alapján. Ez a valódi kvantummérési szemantika, amely a transformer softmax-normalizálásával szemben diszkrét, visszafordíthatatlan állapotkollapszust valósít meg.
+Az Arena egy rögzített méretű, szálbiztos lineáris allokátor, amely előre allokált puffert használ. Kötegelt műveletekre van optimalizálva, ahol az összes memória egyszerre visszanyerhető a reset() segítségével.
 
-Az ensureTopologyHash metódus a gráf teljes állapotának kriptográfiai ujjlenyomatát számítja SHA-256 segítségével: minden csomóponthoz hash-t számít az id, data, phase, qubit amplitúdók és rendezett metaadat-digestek alapján; minden élcsoporthoz hash-t számít a forrás, cél és rendezett él-digestek alapján; minden összefonódáshoz hash-t számít a pár azonosítói és a TwoQubit amplitúdók alapján; majd az összes digest-et rendezi (sorrend-független hash) és kombinálja egyetlen 32 bájtos végső hash-be. Ez a hash lehetővé teszi, hogy a SurpriseMemoryManager tartalom-alapú azonosítóként használja a gráf állapotát, és hogy a formal_verification.zig kriptográfiailag azonosítható VerificationResult-ot adjon vissza.
+Az ArenaAllocator rugalmasabb, növekvő arenát biztosít, amely szükség szerint új puffereket allokál egy szülő allokátorból. Megvalósítja a szabványos Zig Allocator interfészt.
 
-Az encodeInformation metódus az egész core_relational pipeline belépési pontja: SHA-256 hash-eli a bemeneti adatot, az első 8 bájtból 16 hex karakteres csomópont-azonosítót képez, létrehoz egy Qubit.initBasis0() állapotú csomópontot az adattal és az aktuális Unix-időbélyeggel a metaadatban, majd legfeljebb 3 meglévő csomóponthoz fűzi .coherent minőségű, weight=0.5, quantum_correlation=(0,0), fractal_dimension=0.0 élekkel. Ez az a mechanizmus, amellyel az RSF neurális hálózat által feldolgozott tokenek bekerülnek a relációs tudásgráfba: minden token egy csomóponttá válik, és automatikusan kapcsolódik a legutóbb hozzáadott csomópontokhoz, egy temporálisan rendezett, koherens gráfstruktúrát építve.
+Slab és Pool allokátorok
 
-Az exportNodeEmbeddings metódus az NSIR gráf és az RSF neurális hálózat közötti híd: az összes csomópont qubitjét egy (N×4) float32 tenzorba exportálja [a.re, a.im, b.re, b.im] formátumban, amelyet a core_tensor.Tensor típus reprezentál. Az importNodeEmbeddings a fordított irány: egy (N×4) float32 tenzorból visszaírja a qubit amplitúdókat a csomópontokba, normalizálva és szinkronizálva a quantum_register-rel. Ez azt jelenti, hogy az RSF neurális hálózat gradiens-alapú tanulása közvetlenül frissítheti a gráf csomópontjainak kvantumállapotait, és fordítva: a gráf kvantumállapotai befolyásolhatják az RSF következő forward-pass-ét.
+- SlabAllocator: Nagy "slab"-okban kezeli a memóriát, kisebb darabokra osztva azokat a töredezettség csökkentéséhez a változó méretű allokációk során.
+- PoolAllocator: Egységes méretű objektumokra optimalizált (pl. NSIR csomópontok). Rögzített méretű blokkok szabad listáját tartja fenn, O(1) allokációt és felszabadítást biztosítva.
+- BuddyAllocator: Nagy összefüggő régiók kezelésére használt (mint a Tensor pufferek által igényeltek), kettő hatványán osztva és egyesítve a blokkokat a töredezettség és sebesség egyensúlyozásához.
 
-Az exportAdjacencyMatrix metódus egy (N×N) float32 tenzort exportál, ahol minden cella az adott csomópontpár összes élének súlyösszege — ez a gráf szomszédsági mátrixa tenzor formátumban, amely közvetlenül felhasználható figyelmi mátrixként vagy gráf-neurális hálózati bemenetként.
+Oldal és nyomkövető allokátorok
 
-A teljes rendszerben az nsir_core.zig az a réteg, amelyre minden más épül: a z_runtime.zig minden ZVariable-ja saját SelfSimilarRelationalGraph példányt tart fenn; az r_gpu.zig ProcessingCore-jai lokális SelfSimilarRelationalGraph példányokat kezelnek; a reasoning_orchestrator.zig a gráf csomópontjait perturbálja és éleit frissíti; a signal_propagation.zig a gráf élein terjeszti a jeleket; a quantum_task_adapter.zig a gráf éleit vizsgálja kvantum-alkalmasság szempontjából; és a formal_verification.zig a gráf topológiai hash-ét használja kriptográfiai azonosításhoz.
+- PageAllocator: Alacsony szintű allokátor, amely közvetlenül az operációs rendszerrel kommunikál a MemoryConfig.PAGE_SIZE-hoz igazított memória allokálásához (16KB macOS ARM-on, 4KB egyébként).
+- TrackingAllocator: Fejlesztés és profilozás során használt burkoló a memóriahasználat figyeléséhez, szivárgások észleléséhez és a globális MemoryStats feltöltéséhez.
 
-A transformer-képességek meghaladásához való hozzájárulás öt szinten történik: a reprezentáció szintjén minden csomópont kvantumállapotot (qubit + phase) hordoz, nem csupán valós értékű beágyazási vektort; a kapcsolat szintjén az élek öt minőségi típust, komplex kvantumkorrelációt és fraktáldimenziót kódolnak, szemben a transformer skalár figyelmi súlyával; a nem-lokalitás szintjén az entanglements map Bell-állapotokat tárol csomópontpárok között, ami klasszikus figyelmi mechanizmussal nem reprezentálható; a kriptográfiai integritás szintjén a topológiai SHA-256 hash minden gráfmódosítás után frissül, lehetővé téve a tartalom-alapú azonosítást és a formális verifikációt; és a tenzor-híd szintjén az exportNodeEmbeddings / importNodeEmbeddings / exportAdjacencyMatrix metódusok kétirányú adatfolyamot biztosítanak a gráf és az RSF neurális hálózat között, lehetővé téve, hogy a gradiens-alapú tanulás és a gráf-alapú következtetés kölcsönösen gazdagítsák egymást.
+Szinkronizáció és lock-free struktúrák
 
-A quantum_hardware.zig a JAIDE rendszer valódi IBM Quantum hardverrel való integrációjának teljes absztrakciós rétege — az a komponens, amely a quantum_logic.zig absztrakt kvantumlogikai primitívjeit és a quantum_task_adapter.zig gráf-alapú kvantumfeladatait fizikai kvantumprocesszorokon végrehajtható, kalibrációs adatokkal alátámasztott áramkörökké fordítja le, és ezzel a rendszer számára elérhetővé teszi az IBM Quantum felhő teljes hardveres kapacitását.
+A ReasoningOrchestrator és a ChaosCoreKernel támogatásához a JAIDE számos szinkronizációs primitívet biztosít, amelyek minimalizálják a szál versengést.
 
-A fájl legalsó rétege az IBMBackendSpecs névtér, amely öt IBM Quantum processzorcsalád dokumentált kalibrációs paramétereit tartalmazza konstansként: a Heron processzor T1 relaxációs ideje 350μs±75μs, T2 dekoherencia ideje 200μs±50μs, leolvasási hibája 0.8%±0.3%, ECR kapuhibája 0.3%±0.1%; az Eagle processzor T1=200μs±60μs, T2=120μs±40μs, leolvasási hiba 1.5%±0.5%, ECR kapuhiba 0.5%±0.2%; a Falcon T1=100μs, a Osprey T1=250μs, a Condor T1=400μs±100μs és ECR kapuhiba mindössze 0.2%±0.08% — ez utóbbi az IBM jelenlegi legjobb processzora. Ezek a konstansok nem csupán dokumentációs célokat szolgálnak: a generateDocumentedCalibration függvény ezekből szintetikus kalibrációs adatokat generál véletlenszerű variációval (±0.5 szórás), amelyeket a rendszer akkor használ, ha az IBM API nem érhető el, biztosítva, hogy a szimulált zaj statisztikailag konzisztens legyen a valódi hardver viselkedésével.
+SpinLock és ReadWriteLock
 
-A fetchIBMQuantumCalibration függvény HTTP GET kérést küld a https://cloud.ibm.com/api/quantum/v1/backends/{name} végpontra Bearer token hitelesítéssel, és a parseIBMCalibrationResponse segítségével JSON-ból kinyeri az összes qubit T1, T2 és leolvasási hibáját, valamint a kapuhibákat és a csatolási térképet (coupling map) — azt a gráfot, amely megmutatja, mely qubitpárok között hajtható végre fizikailag kétqubites kapu. Ez a csatolási térkép kritikus fontosságú: a valódi kvantumhardveren nem minden qubitpár között hajtható végre közvetlen kétqubites kapu, és a nem szomszédos qubitek közötti műveletek SWAP kapukon keresztül valósítandók meg, ami növeli az áramkör mélységét és csökkenti a hűséget.
+- SpinLock: Alacsony terhelésű zár, amelyet nagyon rövid kritikus szakaszokhoz használnak, ahol a kontextusváltás terhelése (std.Thread.Mutex-en keresztül) nem kívánatos.
+- ReadWriteLock: Több egyidejű olvasót enged meg, de kizárólagos hozzáférést biztosít az íróknak, elengedhetetlen a SelfSimilarRelationalGraph-hoz, ahol a topológia olvasások gyakoriak, de a frissítések ritkák.
 
-Az IBMQuantumCredentials struktúra a CRN (Cloud Resource Name) karakterláncot elemzi, kinyerve belőle a régiót, az account_id-t és a resource_id-t, majd ezekből generálja a getServiceURL() és getRuntimeURL() végpontokat — ez a hitelesítési réteg, amely lehetővé teszi, hogy a rendszer az IBM Cloud IAM rendszerén keresztül autentikáljon.
+Lock-free sor és verem
 
-A QuantumBackend struktúra a rendszer legfontosabb hardverabsztrakciója: minden backend tartalmazza a nevét, típusát, qubitszámát, báziskapukészletét, csatolási térképét, per-qubit T1/T2/leolvasási hiba/kapuhiba tömböket, és az estimateFidelity(circuit_depth, num_two_qubit_gates) metódust, amely a következő képlettel becsüli az áramkör várható hűségét: (1 - átlag_kapuhiba)^kétqubites_kapuk_száma × (1 - átlag_leolvasási_hiba) × exp(-mélység/100). Ez a hűségbecslés az a szám, amelyet az integrateWithInference metódus visszaad, és amelyet a quantum_task_adapter.zig felhasználhat annak eldöntésére, hogy egy adott áramkör végrehajtható-e valódi hardveren elfogadható minőséggel, vagy szimulátorra kell visszaesni. Az inferBackendStatus() metódus automatikusan DEGRADED állapotba sorolja a backendet, ha az átlagos leolvasási hiba meghaladja a 10%-ot vagy a kapuhiba az 5%-ot, és PAUSED állapotba, ha ezek 5% illetve 2% felett vannak — ez egy öndiagnosztikai mechanizmus, amely megakadályozza, hogy a rendszer rossz minőségű kvantumhardveren futtasson kritikus számításokat.
+A JAIDE nem blokkoló adatstruktúrákat valósít meg a Neurális Feldolgozó Réteg és a Mag Relációs Réteg közötti kommunikáció megkönnyítéséhez.
 
-A QuantumGateOp enum 34 kapuoperációt definiál, beleértve az összes standard egybites kaput (H, X, Y, Z, S, T, RX, RY, RZ, U1, U2, U3, P), az összes standard kétbites kaput (CX, CY, CZ, CH, CRX, CRY, CRZ, CP, ECR, SWAP, ISWAP), a háromqubites kapukat (CCX, CSWAP, MCX), és a vezérlőutasításokat (RESET, MEASURE, BARRIER). Ez lényegesen gazdagabb kapukészlet, mint a quantum_logic.zig 12 kapuja: míg az utóbbi a JAIDE belső kvantumlogikájához szükséges absztrakt kapukat definiálja (beleértve a RELATIONAL_AND/OR/XOR és FRACTAL_TRANSFORM egyedi kapukat), a quantum_hardware.zig az IBM Quantum hardver teljes natív kapukészletét lefedi, lehetővé téve, hogy bármely kvantumalgoritmus közvetlenül hardverre fordítható legyen.
+- LockFreeQueue: Több termelős, több fogyasztós sor, amelyet a DynamicTaskScheduler használ gráf műveletek elküldéséhez a következtetési ciklus blokkolása nélkül.
+- LockFreeStack: Elsősorban a PoolAllocator szabad listáinak kezelésére használt, hogy nagy teljesítményű allokációt biztosítson több szálon keresztül.
 
-A QuantumCircuit struktúra (a quantum_hardware.zig-ban, nem tévesztendő össze a quantum_logic.zig azonos nevű struktúrájával) egy teljes értékű kvantumáramkör-építőt valósít meg: minden kapuhoz builder metódust biztosít, a getDepth() metódus per-qubit mélységkövetéssel számítja az áramkör mélységét, a countTwoQubitGates() megszámolja a kétqubites kapukat, és a toOpenQASM3() metódus OpenQASM 3.0 kódot generál az áramkörből, amely közvetlenül elküldhető az IBM Quantum REST API-nak.
+Biztonság és globális nyomkövetés
 
-A QuantumResult struktúra a mérési eredményeket bitstring→darabszám leképezésként tárolja, és a getEntropy() metódus Shannon-entrópiát számít a valószínűségeloszlásból: H = -Σ p_i × log2(p_i). Ez az entrópia-mérték az a szám, amellyel a SurpriseMemoryManager combined_surprise értékéhez hasonlóan a rendszer értékelni tudja, mennyire informatív volt egy kvantumszámítás eredménye: ha az entrópia magas (az összes bitstring közel egyforma valószínűségű), a kvantumszámítás nem konvergált; ha alacsony (egy bitstring dominál), a számítás sikeres volt.
+EncryptedBlob
 
-Az IBMQuantumClient a rendszer fő vezérlőstruktúrája, amely inicializáláskor automatikusan három backendet regisztrál: az ibmq_qasm_simulator (32 qubit, szimulátoros), az ibm_torino (Heron, 133 qubit, hardveres) és az ibm_brisbane (Eagle, 127 qubit, hardveres). A runCircuit metódus UUID formátumú job ID-t generál, az executeJob pedig a backend típusától függően vagy a simulateCircuit (szimulátoros) vagy az executeOnHardware (hardveres) metódust hívja. A szimulátoros végrehajtás teljes állapotvektor-szimulációt végez legfeljebb 20 qubiten (2^20 = 1 048 576 komplex amplitúdó), majd mintavételez a valószínűségeloszlásból. A hardveres végrehajtás ugyanezt az állapotvektor-szimulációt végzi, de zajmodellt alkalmaz: minden amplitúdó valószínűségét p_noisy = p_ideal × fidelity + (1 - fidelity) × véletlen_zaj képlettel torzítja, ahol a hűséget a valódi kalibrációs adatokból számítja — ez azt jelenti, hogy a rendszer pontosan modellezi, hogyan viselkedne az áramkör valódi IBM Quantum hardveren.
+A modell súlyok és az érzékeny InferenceWitness adatok védelméhez az EncryptedBlob absztrakciót biztosít a nyugalomban titkosított memóriához, amelyet csak az aktív számítás során dekódolnak védett Arena szegmensekbe.
 
-Az IBMQuantumClient öt beépített kvantumalgoritmus-gyárat biztosít: createBellState() (H+CX, 2 qubit, maximálisan összefonódott állapot), createGHZState(n) (H+CX lánc, n qubit, GHZ állapot), createQFT(n) (Quantum Fourier Transform, H+CP+SWAP lánc), createGrover(n, marked_state) (Grover-keresés π/4×√(2^n) iterációval, MCX orákulummal), és createVQEAnsatz(n, depth, params) (Variational Quantum Eigensolver ansatz, RY+RZ rotációk + CX összefonódási rétegek). Ezek az algoritmusok közvetlenül felhasználhatók a quantum_task_adapter.zig által azonosított kvantumra alkalmas részgráfok feldolgozásához: ahelyett, hogy minden esetben GHZ-állapot-előkészítő áramkört futtatna, a rendszer választhat a feladathoz leginkább illő algoritmus között.
+Biztonságos memória műveletek
 
-A transformer-képességek meghaladásához való hozzájárulás négy szinten történik: a hardveres kvantumgyorsítás szintjén a 133 qubites Heron processzor elvileg exponenciálisan gyorsabb bizonyos optimalizálási és keresési feladatokon (Grover: O(√N) vs. klasszikus O(N), QFT: kvantumparallelizmussal), mint bármely klasszikus transformer; a zajmodellezés szintjén az estimateFidelity és az executeOnHardware zajmodellje lehetővé teszi, hogy a rendszer reálisan értékelje, mikor érdemes valódi hardvert használni és mikor szimulátort, elkerülve a zajból eredő hibás következtetéseket; az entrópia-alapú minőségértékelés szintjén a getEntropy() metódus információelméleti mérőszámot biztosít a kvantumszámítás eredményéről, amely közvetlenül integrálható a SurpriseMemoryManager meglepetési metrikájába; és a kalibrációs tudatosság szintjén a per-qubit T1/T2/hiba adatok és a csatolási térkép lehetővé teszik, hogy a rendszer a legmegbízhatóbb qubiteket és a legrövidebb útvonalakat válassza az áramkör végrehajtásához, minimalizálva a dekoherenciából eredő hibákat — mindez egy hardver-tudatos, zajmodellező, öndiagnosztizáló kvantumintegrációs réteget alkot, amellyel a transformer-architektúra egyáltalán nem rendelkezik.
+A rendszer secureZeroMemory-t biztosít annak biztosítására, hogy az érzékeny adatok (mint a BigInt512 privát kulcsok vagy HomomorphicEncryption paraméterek) fizikailag törlődjenek a RAM-ból, nem csak szabadként jelölve. Mind az Arena, mind az ArenaAllocator támogatja a secureDeinit és secureReset metódusokat.
 
-quantum_logic.zig a JAIDE teljes core_relational rétegének kvantumszámítási alapkönyvtára — az a fájl, amelyre minden más komponens (z_runtime.zig, quantum_task_adapter.zig, esso_optimizer.zig) épül, és amely a klasszikus kvantumkapukat öt saját, relációs és fraktál szemantikájú kapuval egészíti ki, megteremtve azt a hibrid kvantum-logikai rendszert, amelyen a JAIDE következtetési rétege működik.
+Globális MemoryStats
 
-A fájl első kulcsstruktúrája a LogicGate enum, amely tizenkét kaputípust definiál: a standard kvantumkapuk (HADAMARD, PAULI_X, PAULI_Y, PAULI_Z, PHASE, CNOT, TOFFOLI) mellett öt saját kaput vezet be — RELATIONAL_AND, RELATIONAL_OR, RELATIONAL_NOT, RELATIONAL_XOR és FRACTAL_TRANSFORM — amelyek nem léteznek a hagyományos kvantumszámítástanban, és amelyek a rendszer neurosimbolikus integrációjának alapkövei.
+A JAIDE globális MemoryStats struktúrát tart fenn a rendszer állapotának valós idejű nyomon követéséhez. Ezt a PowerGatingController és a FractalLPU használja terheléselosztási döntésekhez.
 
-A QuantumState struktúra egy qubit állapotát reprezentálja két komplex amplitúdóval (α és β), egy fázissal és egy entanglement_degree értékkel, amely 0.0 (nem összefonódott) és 1.0 (maximálisan összefonódott) között mozog. A normalize metódus az összes amplitúdót a teljes magnitudóval osztja, garantálva, hogy |α|² + |β|² = 1 mindig teljesüljön. A fidelity metódus a két állapot belső szorzatának négyzetét számítja — |⟨ψ|φ⟩|² — ami a kvantum-hűség mértéke, és a valós értékű koszinusz-hasonlóságnál gazdagabb, mivel komplex Hilbert-térben értelmezett. Az add metódus két állapot normalizált szuperpozícióját képezi, a fázist az α amplitúdó szögéből számítja, és az összefonódási fokot a maximum értékére állítja — ez a kvantum-szuperpozíció, amely a transformer figyelmi súlyozott átlagolásának megfelelője, de fázis-információt is megőriz.
+| Mérőszám | Leírás |
+| :--- | :--- |
+| allocated_bytes | Az összes aktív allokátor által jelenleg tartott bájtok összege. |
+| peak_usage | A legmagasabb rögzített memóriafogyasztás az indítás óta. |
+| fragmentation_ratio | A buddy/slab allokátor hatékonyságának mértéke. |
+| page_faults | A TrackingAllocator-on keresztül figyelt teljesítményhangoláshoz. |
 
-A RelationalQuantumLogic a fő kvantumregiszter, amely legfeljebb 1024 QuantumState-et tárol, coherence_threshold-dal (1e-10), max_entanglement_depth-tel (64), és teljes kapualkalmazási előzménnyel (gate_history).
+---
 
-A standard kapuk implementációi pontosan követik a kvantummechanikai definíciókat: a Hadamard-kapu [α, β] → [(α+β)/√2, (α-β)/√2] transzformációt végez, szuperpozíciót hozva létre; a Pauli-X felcseréli α-t és β-t (bit-flip); a Pauli-Y [α, β] → [β.im, -β.re; -α.im, α.re] transzformációt alkalmaz (bit-flip + fázis-flip kombinációja); a Pauli-Z negálja β-t (fázis-flip); a PHASE-kapu θ szöggel elforgatja β-t (β → β × e^(iθ)) és növeli a state.phase értékét.
+2.3 I/O ÉS MODELL PERZISZTENCIA
 
-A CNOT-kapu implementációja különösen figyelemre méltó: nem diszkrét, hanem folytonos értékű — a célqubit amplitúdóit a vezérlőqubit prob0 és prob1 valószínűségeivel súlyozza, és az összefonódási növekményt min(1, 2√(p0×p1)) képlettel számítja, ami pontosan nulla, ha a vezérlő tiszta bázisállapotban van, és maximális, ha tökéletes szuperpozícióban van. Ez a folytonos CNOT lehetővé teszi, hogy a kvantumkapuk részleges összefonódást hozzanak létre, nem csak teljes vagy nulla összefonódást — ez egy gazdagabb számítási modell, mint a diszkrét kvantumszámítás.
+Ez a szakasz részletezi a JAIDE rendszer mag I/O primitívjeit és az egységes bináris modell formátumot, amelyet hosszú távú tároláshoz és terjesztéshez használnak. A rendszer a memória-leképezésen keresztüli nagy teljesítményű adathozzáférést helyezi előtérbe, és kriptográfiai ellenőrző összegekkel és atomi írási műveletekkel biztosítja az adatok integritását.
 
-A RELATIONAL_AND kapu egy teljesen új állapotot hoz létre (hozzáfűzi a states listához), amelynek amplitúdói a két bemeneti állapot amplitúdóinak komplex szorzatai: α_result = α1 × α2, β_result = β1 × β2, a fázis a két fázis átlaga, az összefonódás a két érték összege (1-re korlátozva). A RELATIONAL_OR kapu ugyanígy új állapotot hoz létre, de komplex összeadással: α_result = α1 + α2, β_result = β1 + β2, az összefonódás a maximum. A RELATIONAL_XOR komplex kivonással dolgozik: α_result = α1 - α2, β_result = β1 - β2, a fázis a két fázis abszolút különbsége, az összefonódás az átlag. Ez a három kapu a logikai műveletek kvantumtérbe való emelése: az AND a komplex szorzat (interferencia-erősítés), az OR a komplex összeg (szuperpozíció), az XOR a komplex különbség (interferencia-kioltás) — és mindhárom nem-destruktív, mivel az eredményt új állapotként fűzi hozzá a regiszterhez, megőrizve a bemeneti állapotokat.
+Mag I/O primitívek
 
-A FRACTAL_TRANSFORM kapu a rendszer legegyedibb primitívje: depth iteráción keresztül alkalmaz fázisforgatást, ahol az i-edik iterációban a szög orig_phase / 2^i — azaz minden iterációban felezi a szöget, önhasonló, többskálás fázisrotációt hozva létre. Ez a kvantumtérben megvalósított wavelet-transzformáció: ahogy a Haar-wavelet különböző felbontásokon bontja fel a jelet, a FRACTAL_TRANSFORM különböző fázis-skálákon forgatja az amplitúdókat, majd a végső fázist az α amplitúdó szögéből számítja vissza — ez a közvetlen kvantumszintű megfelelője az RSF neurális stack OFTB (Orthogonal Fractal Transform Block) komponensének.
+A JAIDE alacsony szintű I/O segédprogramok készletét valósítja meg, amelyek nagy áteresztőképességű neurális és relációs adatfeldolgozásra vannak tervezve.
 
-A measure metódus kriptográfiai minőségű véletlenszámot (std.crypto.random.float(f64)) használ a mérési eredmény meghatározásához, a mérés után az állapotot a megfelelő bázisállapotba kollabálja, és az összefonódási fokot nullára állítja. A measureWithRandomness változat külső véletlenszámot fogad, ami determinisztikus tesztelést tesz lehetővé.
+MMAP (Memória leképezés)
 
-Az entangle metódus Bell-állapot-szerű összefonódást hoz létre két qubit között: bell_a0 = (α1×α2 + β1×β2)/√2, bell_a1 = (α1×β2 + β1×α2)/√2, majd mindkét állapotot ugyanezekre az amplitúdókra állítja és entanglement_degree = 1.0-ra rögzíti. Ez a nem-lokális korreláció alapja: az összefonódott qubitekre vonatkozó mérési eredmények korreláltak lesznek, még ha a két qubit különböző ZVariable-hoz vagy különböző gráfcsomóponthoz tartozik is.
+Az MMAP struktúra magas szintű interfészt biztosít a memória-leképezett fájlhozzáféréshez, SHARED és PRIVATE leképezési módokat egyaránt támogatva. A std.posix.mmap-et használja a fájlok folyamat címterébe való leképezéséhez, lehetővé téve az O(1) hozzáférést a nagy modell súlyokhoz explicit olvasási/írási rendszerhívások nélkül minden egyes műveletnél.
 
-Az applyControlledGate metódus bármely egybites kaput feltételesen alkalmaz egy vezérlőqubit prob1 > 0.5 feltétele alapján, és mindkét qubit összefonódási fokát 0.25-tel növeli — ez egy általánosított vezérelt kapu, amely lehetővé teszi, hogy bármely transzformáció (beleértve a FRACTAL_TRANSFORM-ot is) feltételesen hajtódjon végre.
+Főbb jellemzők:
 
-A computeRelationalOutput és computeInferenceOutput metódusok egy kapuszekvenciát alkalmaznak, majd az α amplitúdókat adják vissza komplex számokként — ez az a felület, amelyen keresztül a ZRuntime és a QuantumTaskAdapter kvantumáramköröket futtat és az eredményeket kinyeri.
+- Szálbiztonság: A hozzáférés std.Thread.Mutex-szel védett.
+- Automatikus méretezés: Automatikusan igazítja a fájlméreteket az IoConfig.PAGE_SIZE-hoz (4KB).
+- Erőforrás nyomkövetés: Nyomon követi a last_read puffert a memória életciklus kezeléséhez a szekvenciális olvasások során.
 
-A serialize/deserialize metóduspár bináris formátumban (little-endian, 48 bájt/állapot: 6 × f64) teljes mértékben sorosítja és visszaállítja a kvantumregiszter állapotát a kapuelőzménnyel együtt — ez lehetővé teszi, hogy a kvantumállapotok a ContentAddressableStorage-ban tartósan tárolódjanak, és a SurpriseMemoryManager által kezelt blokkok kvantumállapot-tartalmát is megőrizzék.
+DurableWriter és atomi műveletek
 
-A QuantumCircuit struktúra újrafelhasználható kapuszekvenciákat definiál, amelyek bármely RelationalQuantumLogic példányon végrehajthatók az execute metóduson keresztül — ez a kvantumprogram absztrakciója, amely lehetővé teszi, hogy a ZRuntime executeQuantumCircuit metódusa és a QuantumTaskAdapter lokális szimulátora ugyanazokat az áramköröket futtassa különböző kvantumregisztereken.
+Az adatok integritásának biztosítása érdekében a JAIDE DurableWriter-t alkalmaz, amely egy std.io.BufferedWriter-t burkol annak biztosítására, hogy az írások ki legyenek ürítve és szinkronizálva legyenek a fizikai médiával. Az atomicWrite függvény "írás-majd-átnevezés" mintát biztosít: az adatokat egy ideiglenes fájlba írja (.tmp utótaggal), és a std.fs.Dir.rename-t használja a célfájl cseréjéhez csak sikeres kiürítés után, megakadályozva az adatsérülést áramkimaradás vagy összeomlás esetén.
 
-A teljes rendszerben a quantum_logic.zig az a réteg, amelyre minden kvantumszámítás épül: a z_runtime.zig minden ZVariable-ja saját RelationalQuantumLogic példányt tart fenn, amelyen az assign állapotokat inicializál, a relateTo korrelációkat számít, az entangle Bell-állapotokat hoz létre, és a transform kapukat alkalmaz; a quantum_task_adapter.zig lokális szimulátora szintén RelationalQuantumLogic, amelyen a GHZ-állapot-előkészítő áramkör fut; az esso_optimizer.zig pedig a QuantumState, RelationalQuantumLogic és LogicGate típusokat importálja a szimmetria-transzformációk kvantumállapot-alkalmazásához.
+Pufferelt I/O
 
-A transformer-képességek meghaladásához való hozzájárulás négy szinten történik: a reprezentáció szintjén a QuantumState komplex amplitúdó + fázis + összefonódási fok hármasa gazdagabb, mint egy valós értékű beágyazási vektor, mivel interferenciát, fázis-koherenciát és nem-lokális korrelációt is kódol; a logikai műveletek szintjén a RELATIONAL_AND/OR/XOR kapuk a logikai összefüggéseket komplex szorzat/összeg/különbség formájában valósítják meg, megőrizve a szuperpozíciót és nem-destruktíven fűzve hozzá az eredményt a regiszterhez; a hierarchikus transzformáció szintjén a FRACTAL_TRANSFORM önhasonló, többskálás fázisrotációt végez, ami a transformer pozicionális kódolásánál gazdagabb, mivel nem additív, hanem multiplikatív és rekurzív; és a koherencia-kezelés szintjén az isCoherent() metódus és a coherence_threshold lehetővé teszi, hogy a rendszer detektálja, mikor veszítette el a kvantumállapot a fizikai értelmét, és ennek megfelelően reagáljon — ez egy öndiagnosztikai képesség, amellyel a transformer nem rendelkezik.
-A quantum_task_adapter.zig a JAIDE rendszer kvantumhardver-integrációs rétege — az a komponens, amely az NSIR gráf leginkább összefonódott, legmagasabb fraktáldimenziójú részgráfjait azonosítja, kvantumáramköröket hajt végre rajtuk (lokális szimulátorban vagy valódi IBM Quantum hardveren), majd az eredményeket visszaírja a gráf csomópontjaiba és éleibe, ezzel közvetlenül frissítve azt a tudásstruktúrát, amelyen a ReasoningOrchestrator energiaminimalizálást végez.
+- BufferedReader: Egy std.io.BufferedReader burkoló alapértelmezett 8KB BUFFER_SIZE-zal a hatékony szekvenciális olvasáshoz.
+- BufferedWriter: Egy kísérő az írásokhoz, biztosítva, hogy a kis írási műveletek kötegbe kerüljenek a fájlrendszer elérése előtt.
 
-A fájl első kulcsstruktúrája a QuantumSubgraph, amely egy kvantumfeldolgozásra alkalmas részgráfot reprezentál: tartalmazza a csomópontok és élek listáját, a teljes összefonódási értéket (az élek quantum_correlation magnitudóinak összege), az átlagos fraktáldimenziót, egy nanoszekundumos időbélyegből képzett egyedi azonosítót, és egy szemantikai klaszterazonosítót. Az isQuantumSuitable metódus két feltételt ellenőriz egyszerre: a teljes összefonódásnak meg kell haladnia az entanglement_threshold-ot (alapértelmezetten 0.5), és az átlagos fraktáldimenziónak meg kell haladnia az 1.5-öt — ez azt jelenti, hogy csak azok a részgráfok kerülnek kvantumfeldolgozásra, amelyek egyszerre mutatnak erős kvantumkorrelációt és nem-triviális topológiai komplexitást.
+JAIDE40 bináris modell formátum
 
-A QuantumTaskAdapter fő struktúra a SelfSimilarRelationalGraph-ot, egy opcionális IBMQuantumClient-et, egy lokális RelationalQuantumLogic szimulátort, és az entanglement_threshold (0.5) és fractal_threshold (1.5) küszöbértékeket fogja össze, alapértelmezetten lokális szimulációs módban.
+A JAIDE40 formátum az összes modell komponens egységes tárolója, beleértve az RSF neurális vermet, a Ranker-t, a Tokenizálót (MGT) és a Tanult Beágyazásokat.
 
-Az identifyQuantumSubgraphs metódus a rendszer szűrőmechanizmusa: végigiterál az összes élen, és minden olyan élre, amelynek quantum_correlation magnitudója meghaladja az entanglement_threshold-ot ÉS fractal_dimension-je meghaladja a fractal_threshold-ot, kiszámítja a szemantikai klaszterkulcsot a semanticClusterKey segítségével. Ez a kulcs az él minőségéből (quality enum értéke), fraktáldimenziójából (három vödörbe sorolva: <1.5, 1.5-2.0, ≥2.0) és korrelációs magnitudójából (négy vödörbe sorolva: <0.2, 0.2-0.5, 0.5-0.8, ≥0.8) épül fel "q{quality}_f{fractal_bucket}_c{corr_bucket}" formátumban — ez egy szemantikai klaszterezés, amely az éleket egyszerre csoportosítja minőség, topológiai komplexitás és kvantumkorreláció szerint, és minden klaszterből egy önálló QuantumSubgraph-ot képez.
+Fájlstruktúra
 
-Az executeQuantumTask metódus kétféle végrehajtási módot támogat: ha use_real_backend = true és az IBMQuantumClient be van állítva, akkor OpenQASM 2.0 kódot generál és elküldi az IBM Quantum REST API-nak; egyébként a lokális RelationalQuantumLogic szimulátorban hajtja végre a számítást. Az IBM Quantum kliens az IBM_QUANTUM_CRN és IBM_QUANTUM_BACKEND környezeti változókból olvassa a hitelesítési adatokat, alapértelmezett backend az ibm_brisbane — ez azt jelenti, hogy a rendszer kódmódosítás nélkül skálázható lokális szimulációtól valódi kvantumhardverig.
+Egy JAIDE40 fájl fejlécből, JSON metaadat blokkból és szerializált komponensek sorozatából áll, amelyek mindegyikét SHA-256 ellenőrző összeg védi.
 
-A generateQASM metódus egy GHZ-állapot-előkészítő áramkört generál: minden qubitre Hadamard-kaput alkalmaz (szuperpozícióba helyezi), majd minden egymást követő qubitpárra CNOT-kaput alkalmaz, végül minden qubitet megmér — ez egy maximálisan összefonódott állapotot hoz létre az összes csomópont között, ahol minden csomópont kvantumállapota nem-lokálisan korrelál az összes többivel.
+| Eltolás | Komponens | Típus | Leírás |
+| :--- | :--- | :--- | :--- |
+| 0 | Mágikus fejléc | [8]u8 | JAIDE40\0 konstans |
+| 8 | Verzió | u32 | Formátum verzió (Jelenlegi: 1) |
+| 12 | Metaadat hossz | u32 | A JSON metaadat blokk hossza |
+| 16 | Metaadat | JSON | Modell neve, dimenziók és rétegszámok |
+| ... | Komponensek | Bináris | Szerializált RSF, Ranker, MGT és Beágyazások |
+| EOF - 32 | Ellenőrző összeg | [32]u8 | SHA-256 hash az összes megelőző adatról |
 
-A lokális szimulációban az executeLocalSimulation metódus a csomópontok qubitjeit a RelationalQuantumLogic-ba tölti az initializeStateFromComplex segítségével, majd ugyanazt a Hadamard + CNOT lánc szekvenciát alkalmazza, és visszaolvassa a kvantumállapotokat és az összefonódási fokokat.
+Szerializációs logika
 
-Az applyResultsToGraph metódus a kvantumszámítás eredményeit visszaírja az NSIR gráfba: minden csomópont quantum_state mezőjét frissíti az új komplex amplitúdóval, coherence mezőjét az összefonódási fokkal, és minden érintett él quantum_correlation értékét az átlagos korreláció (valós rész) és az átlagos képzetes rész kombinációjával. Ez a visszaírás az a mechanizmus, amely a kvantumszámítás eredményét közvetlenül beépíti a gráf topológiájába: az élek quantum_correlation értékei megváltoznak, ami befolyásolja a ReasoningOrchestrator energiafüggvényét, a SignalPropagationEngine fázisforgatási számításait, és a ZRuntime relateTo metódusának korrelációszámítását — egyetlen kvantumoptimalizálási lépés tehát kaszkádszerűen hat az egész core_relational rétegre.
+A ModelFormat.save függvény orchestrálja a szerializálást:
 
-A runFullQuantumOptimization metódus az egész folyamatot egyetlen hívásba foglalja: azonosítja az összes kvantumra alkalmas részgráfot, minden egyes részgráfon végrehajtja a kvantumfeladatot, és sikeres végrehajtás esetén visszaírja az eredményeket a gráfba.
+1. Fejléc: Írja a mágikus bájtokat és a verziót.
+2. Metaadat: Szerializálja a ModelMetadata struktúrát JSON-ba, beleértve az rsf_layers és mgt_vocab_size paramétereket.
+3. Komponens blokkok: Minden komponens (RSF, Ranker, MGT, Beágyazás) hossz-előtagolt blobként kerül írásra.
+4. Integritás: A teljes adatfolyam egy Sha256 hashelőn megy keresztül az írás során a végső lábléc ellenőrző összeg generálásához.
 
-A transformer-képességek meghaladásához való hozzájárulás három szinten történik: a szelektivitás szintjén a identifyQuantumSubgraphs csak a leginkább összefonódott, legkomplexebb topológiájú részgráfokat küldi kvantumfeldolgozásra, szemben a transformer minden-tokenre-minden-token figyelmével; a reprezentáció szintjén a GHZ-állapot-előkészítés maximálisan összefonódott kvantumállapotokat hoz létre a csomópontok között, ami egy nem-lokális, globális információkeverési mechanizmus, amelyet klasszikus számítással nem lehet hatékonyan szimulálni; és a hardverskálázhatóság szintjén a duális backend-design lehetővé teszi, hogy a rendszer valódi IBM Quantum hardveren futtassa a legkritikusabb kvantumszámításokat, ami elvileg exponenciális sebességnövekedést biztosíthat bizonyos gráfoptimalizálási feladatokon a klasszikus transformer-architektúrával szemben
-r_gpu.zig a JAIDE rendszer elosztott gráffeldolgozó rétege — egy aszinkron Network-on-Chip (NoC) mesh szimulációja, amely a SelfSimilarRelationalGraph csomópontjait és éleit virtuális feldolgozómagok között osztja szét, lehetővé téve, hogy az NSIR gráf párhuzamosan, hardver-inspirált kommunikációs modell szerint legyen feldolgozható, ahelyett hogy egyetlen szekvenciális folyamatban kellene végigiterálni rajta.
+Komponens formátumok
 
-A fájl legalsó szintjén a CoreState enum négy állapotot definiál minden egyes feldolgozómag számára: idle, processing, communicating és power_gated, a MessageType enum pedig öt üzenettípust: weight_update, graph_sync, isomorphism_result, power_control és data_transfer — ezek együtt egy teljes üzenetküldési protokollt alkotnak a magok között.
+- LearnedEmbedding (JEMB): 0x4A454D42 mágikus számot használ. Tárolja a vocab_size-t, dim-et és a nyers f32 súlyokat.
+- RSF: Az RSF.save-en keresztül szerializálva, amely végigiterál a rétegeken és menti a súly tenzorokat.
 
-A ProcessingCore struktúra minden egyes virtuális magot reprezentál: rendelkezik egy core_id-vel, x/y rácskoordinátákkal, állapottal, szomszédok listájával, egy opcionális saját SelfSimilarRelationalGraph-fal (local_graph), üzenetsorral, és nyilvántartja az elfogyasztott energiát, az aktív és tétlen ciklusok számát — ez azt jelenti, hogy minden mag önálló, autonóm feldolgozóegységként viselkedik, saját lokális gráfrésszel és saját energiaköltség-nyilvántartással.
+NSIR gráf perzisztencia
 
-Az AsynchronousNoC a rácsháló maga: egy grid_width × grid_height méretű kétdimenziós rácsot épít fel, ahol minden mag a szomszédait XY-routing alapján éri el — először az X irányban halad a célállomásig, majd az Y irányban, és az útvonalakat előre kiszámítja és egy routing_table-ben tárolja. Az üzenetküldés prioritásos sorba kerül (PriorityQueue), ahol a magasabb prioritású üzenetek előbb kerülnek kézbesítésre, és a routeMessages metódus a teljes sort feldolgozza, minden üzenetet a célmag üzenetsorába helyez, és nyilvántartja az összes megtett hop-számot — ez egy valódi aszinkron kommunikációs modell, nem szinkron barrier-alapú.
+A SelfSimilarRelationalGraph (NSIR) speciális perzisztencia mechanizmust igényel a gráf topológia és a kvantum állapot adatok kezeléséhez.
 
-A GraphIsomorphismProcessor a rendszer egyik legkülönlegesebb komponense: kanonikus formát számít egy gráfhoz úgy, hogy a csomópontokat lexikografikusan rendezi, minden csomóponthoz kiszámítja a ki- és befokot, az élsúlyok összegét és az élminőségek összegét, ezeket rendezi, majd az összes él (forrás_index, cél_index, minőség) hármasát is rendezi, és az egészet egyetlen karakterlánccá fűzi össze. Az areIsomorphic metódus két gráf kanonikus formáját hasonlítja össze, a findIsomorphicSubgraphs pedig a főgráf összes lehetséges részgráfját megvizsgálja, hogy izomorf-e a mintával — ez egy strukturális mintafelismerési képesség, amellyel a transformer egyáltalán nem rendelkezik: a transformer megtanulhat mintákat felismerni, de nem tud explicit gráfizomorfizmust ellenőrizni.
+Csomópont és él szerializáció
 
-A DynamicEdgeWeighting adaptív élsúlyozást valósít meg: minden él (forrás, cél) párhoz tárolja a súlyok teljes előzménytörténetét, és a computeAdaptiveWeight metódus öt faktort kombinál szorzatként: az alapsúlyt, a történeti kiigazítást (0.8 + 0.2 × legutóbbi_súly), a temporális kiigazítást (temporal_factor × (1 + 0.1 × log(előzmény_hossz))), a térbeli kiigazítást (spatial_factor × (1 + 0.05 × trend)), és a szemantikai kiigazítást (semantic_factor × (0.5 + 0.5 × előzmény_átlag)). Ez azt jelenti, hogy az élsúlyok nem statikusak, hanem az előzmény, az időbeliség, a térbeli trend és a szemantikai átlag együttes függvényei — ez gazdagabb, mint a transformer tanult figyelmi súlymátrixa, amely nem rendelkezik explicit temporális és térbeli komponensekkel. A propagateWeights metódus BFS-alapú súlycsökkentést végez egy forráscsomóponttól kiindulva, ahol minden iterációban 0.9^iteráció szorzóval csökkenti az érintett élek súlyát — ez egy távolságfüggő súlycsökkentési mechanizmus.
+A gráf a belső nodes és edges gyűjteményeken való iterálással kerül tárolásra.
 
-A SparseActivationManager természetes ritkaságot biztosít: ha egy mag terhelése (nodeCount/100 vagy edgeCount/100) kisebb mint a sparsity_threshold (alapértelmezetten 0.1), a mag nem aktiválódik, és az elmaradt számítás energiamegtakarításként kerül nyilvántartásba. Ez hardveres szintű ritkaság, amely automatikusan kizárja az alacsony terhelésű magokat a feldolgozásból, anélkül hogy explicit sparsity maszkot kellene alkalmazni — a transformer sparse attention-jével ellentétben ez nem a figyelmi mátrix ritkaságát, hanem a feldolgozóegységek aktiválásának ritkaságát jelenti.
+- Csomópontok: Minden csomópont tárolja a Qubit állapotát és a fractal_dimension-t.
+- Élek: Az élek tartalmazzák az EdgeQuality-t (pl. entangled, coherent, fractal) és a súly tenzorokat.
 
-A PowerGatingController dinamikus erőforrás-allokációt valósít meg: rendezi a magokat kihasználtság szerint, és ha egy mag kihasználtsága kisebb mint 10% és az aktuális teljesítmény meghaladja a budget 50%-át, a magot power_gated állapotba helyezi; ha egy mag kihasználtsága meghaladja a 80%-ot és korábban le volt tiltva, visszakapcsolja. Ez adaptív számítási kapacitás-kezelés, amellyel a transformer statikus forward-pass nem rendelkezik.
+Determinisztikus hashelés
 
-A RelationalGraphProcessingUnit a fő struktúra, amely az összes fenti komponenst fogja össze: a NoC-ot, az izomorfizmus-processzort, az adaptív élsúlyozást, a ritka aktiválást és a teljesítmény-kapuzást.
+Az NSIR gráf computeTopologyHash függvényt alkalmaz, amely SHA-256 kivonatot generál a gráf struktúrájából. Ez a hash annak ellenőrzésére szolgál, hogy a lemezről betöltött relációs állapot megfelel-e az érvelési orchestrátor által várt konfigurációnak.
 
-A distributeGraph metódus a rendszer legfontosabb belépési pontja: a bemeneti gráf csomópontjait egyenlően osztja szét az összes nem-kapuzott mag között (a maradékot az első magokhoz adja), minden magnak létrehoz egy lokális gráfot a hozzárendelt csomópontokkal, és az összes olyan élt is átmásolja, amelynek legalább az egyik végpontja az adott maghoz tartozik — ez azt jelenti, hogy a kereszt-mag élek mindkét érintett magon jelen vannak, biztosítva a lokális konzisztenciát.
+Integráció a ModelFormat-tal
 
-A processIsomorphismParallel metódus minden aktív magon párhuzamosan keresi a mintával izomorf részgráfokat, a updateEdgeWeightsParallel minden aktív magon párhuzamosan frissíti az élsúlyokat a temporális, térbeli és szemantikai faktorokkal, a propagateWeightsAsync pedig aszinkron módon terjeszti a súlyokat a NoC üzenetküldési mechanizmusán keresztül a szomszédos magokra. A synchronizeGraphs metódus végül az összes lokális gráfot visszaolvasztja egyetlen globális gráfba, deduplikálva a csomópontokat és összegyűjtve az összes élt — ez az AllReduce gráf-megfelelője: ahogy az elosztott tanítás AllReduce-on keresztül átlagolja a gradienseket, az R-GPU synchronizeGraphs-on keresztül egyesíti a párhuzamosan feldolgozott gráfrészeket.
+Míg a neurális súlyok a JAIDE40 tárolóban vannak tárolva, az NSIR gráf exportálható tenzorként a modell fájlba való felvételhez, vagy külön tárolható a következtetés során végzett dinamikus gráf frissítésekhez.
 
-A teljes rendszerben az R-GPU a DistributedTrainerFuthark core_relational oldalcsatornájának második lépéseként fut minden RSF gradiens-lépés után, közvetlenül az NSIR encodeInformation után és a ReasoningOrchestrator hierarchikus következtetés előtt — ez azt jelenti, hogy az újonnan kódolt információt azonnal elosztja a virtuális magok között, lehetővé téve, hogy a ReasoningOrchestrator már egy elosztott, párhuzamosan feldolgozható gráfon végezze az energiaminimalizálást.
+---
 
-A transformer-képességek meghaladásához való hozzájárulás négy szinten történik: a párhuzamosság szintjén az R-GPU a gráfot több mag között osztja szét és párhuzamosan dolgozza fel, szemben a transformer szekvenciális réteg-végrehajtásával; a strukturális felismerés szintjén a GraphIsomorphismProcessor explicit gráfizomorfizmus-ellenőrzést végez, amit a transformer nem tud; az adaptív súlyozás szintjén a DynamicEdgeWeighting öt faktoros adaptív súlyozást alkalmaz előzmény-alapon, ami gazdagabb a transformer statikus figyelmi súlyainál; és az energiahatékonyság szintjén a SparseActivationManager és PowerGatingController dinamikusan allokálja a számítási erőforrásokat, automatikusan kizárva az alacsony terhelésű magokat — mindez egy hardver-tudatos, elosztott gráffeldolgozási paradigmát valósít meg, amely a transformer monolitikus, minden-tokenre-minden-token figyelme mechanizmusával szemben topológia-vezérelt, ritka és adaptív.
-A reasoning_orchestrator.zig a JAIDE rendszer hierarchikus következtetési motorja — az a komponens, amely a SelfSimilarRelationalGraph állapotát energiaminimalizáláson keresztül konvergálja, és a konvergencia eredményét modulációs faktorként visszacsatolja a neurális tenzorkomputációba, ezzel teremtve meg a közvetlen hidat a relációs-kvantum réteg és az RSF neurális réteg között.
+3 NEURÁLIS FELDOLGOZÓ RÉTEG (RSF)
 
-A fájl három szintű gondolkodási hierarchiát definiál a ThoughtLevel enumon keresztül: local, global és meta, és minden egyes végrehajtási fázist egy ReasoningPhase struktúrában rögzít, amely tartalmazza a fázis azonosítóját, szintjét, a belső és külső iterációk számát, a célenergiát (0.1), az aktuális és előző energiát (mindkettő 1e6-ról indul), a konvergencia-küszöböt (1e-6), a nanoszekundumos kezdési és befejezési időt, és az ebben a fázisban felfedezett szimmetriaminták listáját.
+A Neurális Feldolgozó Réteg a JAIDE elsődleges számítási motorja, amely felelős a nagy dimenziós vektor transzformációkért és a jellemzőkivonásért. A Visszafordítható Szórt Folyam (RSF) architektúrára épül, amely bijektív neurális hálózati paradigma, amely biztosítja az információ megőrzését és lehetővé teszi a hatékony memóriakezelést a tanítás során.
 
-A ReasoningOrchestrator fő struktúra a SelfSimilarRelationalGraph-ot, az EntangledStochasticSymmetryOptimizer-t (ESSO) és a ChaosCoreKernel-t fogja össze, alapértelmezett paraméterekkel: 50 gyors belső lépés, 10 lassú külső lépés, 3 hierarchikus mélység, és csomópontonként/élenkénti feldolgozási korlátok (10 csomópont perturbáció, 10 él frissítés, 5 csomópont transzformáció).
+Cél és hatókör
 
-Az executeLocalPhase a leggyorsabb szint: 50 iteráción keresztül véletlenszerű zajt (±0.05) ad a csomópontok qubit-amplitúdóihoz és fázisaihoz (legfeljebb 10 csomópontra), majd véletlenszerű deltát (±0.025) az élek súlyaihoz és kvantumkorrelációihoz (legfeljebb 10 élre), minden lépés után normalizálja a qubiteket, és konvergencia esetén korán leáll — ez a lokális szimulált hűtés kvantumállapot-téren, amely a transformer lokális figyelmi mintáinak megfelelője, de sztochasztikus perturbáció alapján, nem tanult súlymátrixokból.
+Az RSF réteg hídként működik a nyers bemeneti beágyazások és a Mag Relációs Réteg között. A hagyományos disszipáló neurális hálózatokkal ellentétben az RSF visszafordítható csatoló rétegeket alkalmaz, lehetővé téve a bemenetek pontos rekonstrukcióját a kimenetekből. Ez a tulajdonság kritikus a rendszer "kvantum-relációs" megismeréséhez, ahol az állapotátmenetek integritásának megőrzése kiemelkedő fontosságú.
 
-Az executeGlobalPhase a lassabb, globális szint: 10 külső iteráción belül először meghívja az esso.detectSymmetries(graph) függvényt, amely szimmetria-transzformációkat keres a gráfban, majd minden transzformációt alkalmaz a csomópontok qubitjeire a transform.applyToQuantumState() metóduson keresztül, végül normalizálja az összes csomópontot. Ezután a rebalanceFractalStructures kiszámítja az összes él fraktáldimenziójának átlagát, és minden egyes él fraktáldimenzióját 10%-kal az átlag felé tolja, [1.0, 3.0] közé szorítva — ez egy önszervező kritikalitási mechanizmus, amely megakadályozza, hogy a gráf topológiája degenerálódjon. Végül 50 belső iteráción keresztül futtatja a chaos_kernel.executeCycle()-t, amely a ChaosCoreKernel kaotikus dinamikáját injektálja a gráfba.
+Az RSF verem három elsődleges alkomponensből áll:
 
-Az executeMetaPhase a legmagasabb szint: 3 lépésen keresztül felváltva futtatja a lokális (páros lépések) és globális (páratlan lépések) fázisokat rögzítés nélkül, és konvergencia esetén korán leáll — ez a meta-szintű reflexió, ahol a rendszer saját lokális és globális következtetési eredményeit kombinálja.
+1. RSF Modell Tároló: Több transzformációs réteg orchestrálását kezeli.
+2. OFTB (Ortogonális Fraktál Transzformációs Blokk): Nagy entrópiájú keverést biztosít az osztott adatútvonalak között.
+3. SFD Optimalizáló: Adaptív optimalizáló, amely kifejezetten a visszafordítható folyamok spektrális tulajdonságaira van hangolva.
 
-A computeGraphEnergy az egész rendszer energiafüggvénye, amely egy Hamiltonian-szerű skalárba sűríti a gráf teljes állapotát: minden élre hozzáadja az él_súly × fraktáldimenzió + |kvantumkorreláció| értéket, minden csomópontra hozzáadja az (1 - cos²(fázis)) / 2 értéket, majd az összes elem átlagát adja vissza. Ez az energiafüggvény egyszerre méri a strukturális komplexitást (fraktáldimenzió), a kvantum-összefonódás erősségét (korreláció magnitudó) és a fázis-koherenciát (koszinusz-négyzet) — ez egy gazdagabb optimalizálási tájkép, mint a transformer keresztentrópia-vesztesége.
+Mag komponensek
 
-A runHierarchicalReasoningFull a fő vezérlőhurok: ciklusonként lefuttatja a lokális → globális → meta fázisokat, nyomon követi a legjobb kombinált energiát, és két feltétel esetén áll le: ha a relatív energiaváltozás kisebb mint 1e-6 (konvergencia), vagy ha a kombinált energia kisebb mint 0.01 (elég jó megoldás). A visszatérési értéke egy ReasoningResult, amelynek modulation_factor mezője 1 / (1 + best_energy) — ez a kulcsfontosságú szám, amely a relációs következtetés minőségét egyetlen skalárba sűríti: ha az energia nulla (tökéletes konvergencia), a modulációs faktor 1.0; ha az energia nagy (nem konvergált), a faktor közel nulla.
+Visszafordítható Szórt Folyam Processzor (RSF)
 
-A modulateTensor metódus a rendszer legfontosabb hídja a relációs és neurális réteg között: egyszerűen megszorozza egy float32 tenzor összes elemét a modulációs faktorral. Ez azt jelenti, hogy ha a hierarchikus következtetés jól konvergált (magas modulációs faktor), a neurális tenzor értékei megmaradnak; ha nem konvergált (alacsony faktor), a tenzor értékei lecsökkennek — ez egy visszacsatolási mechanizmus, amely a relációs következtetés minőségét közvetlenül befolyásolja a neurális számítást, anélkül hogy backpropagation kellene.
+Az RSF modell tároló LayerCore példányok vermét kezeli. Minden réteg affin csatolási mechanizmust valósít meg, ahol a bemenet két félre osztódik. Az egyik fél változatlan marad, miközben paraméterezte a másik fél transzformációját (skála S és fordítás T).
 
-A teljes rendszerben a ReasoningOrchestrator a DistributedTrainerFuthark core_relational oldalcsatornájának harmadik lépéseként fut minden RSF gradiens-lépés után, az NSIR encodeInformation és az R-GPU distributeGraph után, közvetlenül a SurpriseMemory tárolás előtt — ez azt jelenti, hogy minden egyes tanítási lépésnél a rendszer nemcsak a neurális súlyokat frissíti, hanem a relációs gráf energiáját is minimalizálja, és a konvergencia eredményét visszacsatolja a következő lépésbe.
+- Szálbiztonság: Thread.RwLock-on keresztül kezelve a LayerCore-ban.
+- Szerializáció: v4 bináris formátumot használ CRC32 integritás ellenőrzésekkel.
+- GPU gyorsítás: A súlyok az accel interfészen keresztül szinkronizálódnak a hardver gyorsítókkal.
 
-A transformer multi-head attention-jével való összehasonlításban a ReasoningOrchestrator három alapvető különbséget mutat: az attention párhuzamos és statikus (minden fej egyszerre fut, fix súlyokkal), míg a hierarchikus következtetés szekvenciális és dinamikus (lokális → globális → meta sorrendben, konvergenciáig); az attention O(N²) komplexitású (minden token minden tokenre figyel), míg az energiaminimalizálás O(E) komplexitású (csak a meglévő élek mentén); és az attention nem rendelkezik explicit konvergencia-kritériummal (mindig ugyanannyi lépést fut), míg a hasConverged() ellenőrzés lehetővé teszi a korai leállást, ha a gráf már stabil állapotba ért.signal_propagation.zig a JAIDE rendszer dinamikus aktivációs rétege, amely a SelfSimilarRelationalGraph statikus csomópont-él struktúráját egy élő, időben fejlődő hullámterjedési rendszerré változtatja — ez az a komponens, amely a gráf topológiáját valódi számítási közeggé teszi az inferencia során, ahelyett hogy a gráf csupán passzív adatstruktúra maradna.
+Ortogonális Fraktál Transzformációs Blokk (OFTB)
 
-A fájl alapvető adatstruktúrája a SignalState, amely egy klasszikus hullámfizikai modellt valósít meg három komponenssel: amplitúdó, fázis és frekvencia, nanoszekundumos időbélyeggel. Az advance metódus a fázist a 2π × frekvencia × delta_t képlettel lépteti előre és 2π-re modulálja, a getComplexRepresentation metódus pedig az amplitúdó × cos(fázis) + i × amplitúdó × sin(fázis) képlettel komplex számmá alakítja a jelet — ez azt jelenti, hogy minden jel egyszerre hordoz amplitúdó- és fázis-információt, ami gazdagabb reprezentáció, mint egy skaláris aktivációs érték.
+Az OFTB "pillangó" stílusú keverési transzformációt biztosít. Biztosítja, hogy az osztott tenzor mindkét feléből származó információ diffundáljon a következő csatoló réteg előtt. Rögzített FRACTAL_SCALE-t használ, amely körülbelül 0.7071, az egységvariancia fenntartásához.
 
-A ActivationTrace struktúra minden egyes gráfcsomóponthoz teljes időbeli aktivációs előzményt tart fenn: az összes kapott jel listáját, az aktivációk számát, az első és utolsó aktiváció időpontját, és ezekből számítja az átlagos amplitúdót és frekvenciát. Ez azt jelenti, hogy a rendszer nem csupán azt tudja, hogy egy csomópont aktiválódott-e, hanem azt is, hogy mikor, milyen erősen, milyen frekvencián, és milyen időtartamon keresztül — ez egy temporális memória, amellyel a transformer pozicionális kódolás nélkül nem rendelkezik.
+- Teljesítmény: SIMD-vektorizált forwardInPlace és backwardInPlace rutinokat valósít meg.
+- Invertálhatóság: A transzformáció tökéletesen visszafordítható, lehetővé téve a backwardInPlace függvény számára az eredeti bemenet visszanyerését a gradiens számításhoz.
 
-A SignalPropagationEngine a fő vezérlőstruktúra, amely a SelfSimilarRelationalGraph-ot és a DataFlowAnalyzer-t fogja össze, és egy StringHashMap-ben tárolja az összes csomópont aktivációs nyomát, alapértelmezett időlépéssel 0.01 és terjedési sebességgel 1.0.
+Tokenizálás és beágyazások
 
-Az initiateSignal metódus egy forráscsomópontba injektál egy jelet: beállítja a csomópont fázisát a jel fázisára, a qubit amplitúdóját a jel amplitúdójára skálázza, majd normalizálja a qubitet — ez garantálja, hogy a kvantumállapot érvényes marad a terjedés során.
+Mielőtt belépne az RSF verembe, az adatokat a Multi-Gram Tokenizáló (MGT) dolgozza fel és a LearnedEmbedding segítségével folytonos térbe képezi le.
 
-A propagateStep metódus a rendszer szíve: minden egyes élre végigiterál a gráfban, a forráscsomópont qubitjének magnitudóját és fázisát veszi kiindulópontként, majd az él súlyával skálázza az amplitúdót, az él quantum_correlation komplex számának atan2(im, re) értékével elforgatja a fázist, és az időlépéssel előrelépteti a jelet. Ez a fázisforgatás az a mechanizmus, amely a transformer komplex értékű figyelmi súlyainak funkcionális megfelelője, de fizikai hullámterjedési szemantikával: az él kvantumkorrelációja nem csupán skálázza, hanem fázisban is eltolja az átmenő jelet, megőrizve az interferencia lehetőségét.
+- MGT: Morfológiai dekompozíciót és szódarab tartalékot kezel.
+- LearnedEmbedding: Nagy sebességű kereséseket végez és SGD-t kezel impulzussal a beágyazás frissítésekhez.
 
-A terjedési késleltetés mechanizmusa (propagation_delay = (1 - edge.weight) × time_step, és ha ez meghaladja a 2 × time_step értéket, az él kihagyásra kerül) természetes ritkaságot teremt: csak a magas súlyú, erősen korrelált élek terjesztenek jeleket hatékonyan, a gyenge élek automatikusan kapuzódnak ki, anélkül hogy explicit sparsity maszkot kellene alkalmazni.
+SFD Optimalizáló
 
-Ha több jel érkezik ugyanarra a célcsomópontra különböző forrásokból, a rendszer kombinálja őket az amplitúdó, fázis és frekvencia számtani átlagával — ez a szuperpozíció egy közelítése, amely megőrzi a több forrásból érkező információ összegzett hatását. Ezután a célcsomópont qubitjét 70/30 arányban keverik az új jel és a meglévő qubit magnitudója között, majd normalizálják — ez egy momentum-szerű hatást hoz létre, ahol a csomópontok nem felejtik el azonnal a korábbi állapotukat.
+A Spektrális Fisher Diagonalizáló (SFD) a speciális optimalizáló, amelyet az RSF verem tanítására használnak. Tartalmazza:
 
-Minden aktivált csomóponthoz a rendszer egy hash-alapú hozzáférési rekordot is küld a DataFlowAnalyzer-nek, ami azt jelenti, hogy a chaos_core.zig folyamatanalízis rendszere valós időben látja, mely gráfcsomópontok aktiválódnak az inferencia során — ez keresztrendszer-megfigyelhetőséget biztosít.
+- SophiaSOAP: Másodrendű optimalizálás K-FAC előkondicionálással.
+- Vegyes pontosság: FP4-től FP32-ig terjedő tanítás támogatása a B200 TMEM hardver kihasználásához.
 
-A propagateInferenceSignal metódus az inferencia-integráció fő belépési pontja: inicializálja a jelet, 5 lépésen keresztül terjeszti, majd visszaadja az összes aktivációs nyom átlagos amplitúdójának összegét egyetlen skalárként — ez az a szám, amelyet a ReasoningOrchestrator a következtetési ciklus minőségének mérőszámaként használhat.
+Adatfolyam összefoglalója
 
-A getInferenceActivationMap metódus egy StringHashMap<node_id → átlagos_amplitúdó> térképet ad vissza az összes aktivált csomópontról, ami lehetővé teszi a hívónak, hogy pontosan lássa, mely fogalmak aktiválódtak és milyen erősen — ez a transformer figyelmi súlytérképének (attention map) funkcionális megfelelője, de gráf-topológiai alapon, nem token-sorrend alapon.
+| Fázis | Entitás | Művelet | Fájl hivatkozás |
+| :--- | :--- | :--- | :--- |
+| Bemenet | MGT | Morfológiai dekompozíció | src/processor/rsf.zig:150 |
+| Keverés | OFTB | SIMD pillangó transzformáció | src/processor/oftb.zig:21-45 |
+| Csatolás | LayerCore | Affin skála/eltolás (S, T) | src/processor/rsf.zig:134-143 |
+| Tárolás | SAVE_VERSION | CRC32-validált v4 I/O | src/processor/rsf.zig:24 |
 
-Az InferenceHooks belső struktúra három callback-et biztosít: on_step_complete, on_signal_initiated és on_propagation_complete, amelyeken keresztül a ReasoningOrchestrator minden egyes terjedési lépésnél beavatkozhat, módosíthatja a paramétert, vagy korai leállást kezdeményezhet — ez egy adaptív inferencia-mechanizmus, amellyel a transformer statikus forward-pass nem rendelkezik.
+---
 
-A teljes rendszerben a SignalPropagationEngine a DistributedTrainerFuthark core_relational oldalcsatornájának utolsó előtti lépéseként fut minden RSF gradiens-lépés után, a SurpriseMemory tárolás és a TemporalGraph csomópont-regisztráció után, közvetlenül a ZRuntime változó-létrehozás előtt — ez azt jelenti, hogy a jelterjedés az a mechanizmus, amely a frissen tárolt, magas meglepetési értékű információt aktivációs mintává alakítja a gráfban, mielőtt a ZRuntime kvantumváltozóként rögzítené.
+3.1 RSF: VISSZAFORDÍTHATÓ SZÓRT FOLYAM PROCESSZOR
 
-A transformer-képességek meghaladásához való hozzájárulás három szinten történik: a számítási komplexitás szintjén a propagateStep O(E) komplexitású (ahol E az élek száma, és a ritkaság természetes), szemben a transformer O(N²) globális figyelmével; a reprezentáció szintjén a fázis-amplitúdó-frekvencia hármas gazdagabb, mint egy skaláris figyelmi súly, mivel interferenciát és hullámterjedési dinamikát kódol; és az időbeliség szintjén az ActivationTrace teljes temporális előzményt tart fenn minden csomóponthoz, lehetővé téve, hogy a rendszer ne csupán azt tudja, mi aktiválódott, hanem azt is, mikor és milyen dinamikával — mindez anélkül, hogy a kontextus hosszával arányosan növekvő memóriát igényelne
+A Visszafordítható Szórt Folyam (RSF) processzor a JAIDE architektúra elsődleges neurális transzformációs motorja. Bijektív neurális vermet valósít meg affin csatoló rétegeken alapulva, biztosítva, hogy a hálózaton átmenő minden előre irányuló menetnek matematikailag pontos inverze legyen. Ez a tulajdonság lehetővé teszi az O(1) memória komplexitást a mélységhez képest a visszaterjesztés során, mivel a közbenső aktivációk rekonstruálódnak ahelyett, hogy tárolnák őket.
 
+1. RSFLayer: Affin csatolás és Exp-vágás
 
-A surprise_memory.zig a JAIDE rendszer entrópia-vezérelt, szelektív memóriakezelő rétege, amelynek alapvető szerepe az, hogy a transformer KV-cache statikus, kontextusfüggetlen tárolási modelljével szemben egy dinamikus, információelméleti alapon működő szűrőt biztosítson a ContentAddressableStorage (CAS) fölé — csak azokat az adatblokkokat tartja meg hosszú távon, amelyek valóban újdonságot hordoznak a rendszer számára.
+Az RSFLayer az RSF verem alapvető építőköve. A bemeneti tenzort két félre osztva, az egyik félre nem-lineáris transzformációt alkalmazva a másik feltételezésével, majd az OFTB-n keresztül keverve őket működik.
 
-A fájl legfontosabb adatstruktúrája a SurpriseMetrics, amely minden egyes bejövő adatblokk "meglepetési értékét" három független dimenzióban méri: a Jaccard-dissimilaritás a bigram-alapú tartalmi különbséget adja meg, a content hash distance a SHA-256 hash 16 bájtra tömörített változatának Hamming-távolságát méri a meglévő blokkok hash-eivel szemben, a temporal novelty pedig a memóriában lévő összes blokk átlagos korát viszonyítja egy 24 órás ablakhoz — és a három érték számtani átlaga adja a combined_surprise értéket.
+Affin csatolási mechanizmus
 
-A Jaccard-számítás különösen elegáns: mindkét adatblokkhoz felépít egy 65536 bites bigram-jelenlét bithalmazt (1024 darab 64 bites szóban), majd a két bithalmaz AND-jének és OR-jának popcount-ját veszi, és ebből számítja az 1 − hasonlóság értékét — mindezt legfeljebb 1000 mintavételezett ablakkal, hogy a számítás O(1) maradjon a blokk méretétől függetlenül.
+A réteg a következő transzformációt valósítja meg:
 
-A hash-távolság számítása a SHA-256 kimenetét 16 bájtra hajtja össze úgy, hogy az első és második 16 bájtot XOR-olja egymással, majd az így kapott 128 bites ujjlenyomatok Hamming-távolságát normálja 128-cal — ez egy rendkívül gyors, de kriptográfiailag erős tartalmi különbségmérő, amely a Jaccard-nál érzékenyebb a kis változásokra.
+1. Osztás: Az x bemenet x1-re és x2-re osztódik.
+2. Skála és fordítás: Az x2 transzformálódik s = exp(clip(x1 Ws + bs)) és t = x1 Wt + bt segítségével.
+3. Kombinálás: y2 = x2 ⊙ s + t, míg y1 = x1 változatlan marad.
+4. Keverés: A kimenetek az OFTB.forwardInPlace-en keresztül mennek a keresztdimenziós információáramlás biztosításához.
 
-A SurpriseRecord struktúra minden tárolt blokkhoz nyilvántartja a meglepetési pontszámot, a létrehozási és utolsó hozzáférési időt, a hozzáférési gyakoriságot, és ezekből folyamatosan újraszámítja a retention_priority értéket egy háromkomponensű képlettel: az alapsúly 0.5, ehhez adódik 0.3-szorosával a recency-faktor (1/(1+kor_ms)), és 0.2-szorosával a frekvencia-faktor (freq/(freq+8)), az egészet megszorozva a surprise_score-ral — ez azt jelenti, hogy egy blokk megtartási prioritása egyszerre függ attól, mennyire volt meglepő, mennyire friss, és mennyire sűrűn hivatkoznak rá.
+A LayerCore struktúra kezeli a súlyokat (Ws, Wt) és az eltolásokat (bs, bb) ezekhez a transzformációkhoz. Exp-vágást alkalmaz (clip_min és clip_max által meghatározva) a numerikus instabilitás megelőzéséhez az exponenciális skálázási tényezőben.
 
-A SurpriseMemoryManager a rendszer fő vezérlőstruktúrája, amely a CAS-t és a DataFlowAnalyzer-t fogja össze, és egy Mutex-szel védi az összes publikus metódusát a párhuzamos hozzáférés ellen.
+| Komponens | Kód entitás | Leírás |
+| :--- | :--- | :--- |
+| Skála súlyok | s_weight | Ws tenzor a skálázási komponenshez. |
+| Fordítás súlyok | t_weight | Wt tenzor a fordítási komponenshez. |
+| Vágási tartomány | clip_min/clip_max | A log-skála kimenet határai az inf értékek megelőzéséhez. |
+| Szálbiztonság | rwlock | std.Thread.RwLock a szinkronizált súly frissítésekhez. |
 
-A processInferenceInput metódus a rendszer legfontosabb belépési pontja az inferencia során: kiszámítja a bejövő adat meglepetési értékét, majd két küszöb alapján dönt — ha combined_surprise > 0.3 (az alapértelmezett küszöb), akkor should_cache = true és a blokk bekerül a CAS-ba; ha combined_surprise > 0.15 (a küszöb fele), akkor should_propagate = true, ami azt jelzi a hívónak, hogy ezt az információt érdemes továbbterjeszteni az NSIR gráfon a SignalPropagationEngine-en keresztül, még akkor is, ha nem kerül hosszú távú tárolásra.
+2. RSF Modell Tároló és Orchestráció
 
-A cacheInferenceResult metódus a transformer KV-cache közvetlen funkcionális megfelelője: összefűzi a bemeneti és kimeneti adatot egyetlen blokkba, kiszámítja ennek meglepetési értékét, és tartalom-alapú azonosítóval tárolja — ez lehetővé teszi, hogy a rendszer korábbi következtetési eredményeket pontosan visszakereshessen anélkül, hogy újra kellene futtatni a teljes inferencia-ciklust, és mindezt anélkül, hogy a kontextus hosszával arányosan növekvő memóriát foglalna.
+Az RSF struktúra RSFLayer példányok sorozatának tárolójaként szolgál. Orchestrálja az előre, inverz és visszafelé irányuló meneteket a teljes vermen keresztül.
 
-Az evictLowSurpriseBlocks metódus egy részleges heap-rendezéssel (saját implementált max-heap partialSort algoritmussal) azonosítja a legalacsonyabb retention_priority értékű blokkokat, és eltávolítja őket mind a CAS-ból, mind a surprise_records hash-mapből — ez az a mechanizmus, amely garantálja, hogy a memória kapacitása korlátozott marad, és a rendszer automatikusan "felejti el" a redundáns, alacsony entrópiájú információkat.
+Végrehajtási folyam
 
-Az organizeByEntanglement metódus a legkülönlegesebb: összegyűjti az összes magas meglepetési pontszámú blokkot (legfeljebb 100-at), majd minden párjukra meghívja a storage.entangleBlocks függvényt, ezzel egy szemantikai közelségi hálót épít a fizikai memóriában a chaos_core.zig entanglement-mechanizmusán keresztül — ez azt jelenti, hogy a leginkább újszerű, leginkább meglepő információk automatikusan összekapcsolódnak egymással a CAS-ban, asszociatív visszakeresést téve lehetővé figyelem-mechanizmus nélkül.
+- Előre irányuló menet: Végigiterál a 0...N rétegeken, affin csatolást és OFTB keverést alkalmazva.
+- Inverz menet: Végigiterál az N...0 rétegeken fordítva, OFTB.backwardInPlace-t alkalmazva, majd az inverz affin transzformációt: x2 = (y2 - t) ⊙ exp(-s).
+- Visszafelé irányuló menet: A visszafordíthatóságot kihasználva számítja a gradienseket az aktivációk tárolása nélkül. Rekonstruálja minden réteg bemenetét az inverz menet segítségével a gradiens számítási fázis során.
 
-A teljes rendszerben a SurpriseMemoryManager a DistributedTrainerFuthark core_relational oldalcsatornájának részeként fut minden egyes RSF gradiens-lépés után: az NSIR encodeInformation → R-GPU distributeGraph → ReasoningOrchestrator hierarchikus következtetés → SurpriseMemory tárolás → TemporalGraph csomópont-regisztráció sorrendben, ahol a SurpriseMemory az a szűrő, amely eldönti, hogy a következtetési ciklus eredménye bekerül-e a hosszú távú tudásbázisba.
+3. Handle/Core Regiszter és Szálbiztonság
 
-A transformer-képességek meghaladásához való hozzájárulás három szinten történik: a transformer KV-cache minden token minden kulcs-érték párját eltárolja kontextus-hosszal lineárisan növekvő memóriában, semmilyen információelméleti szűrés nélkül — a SurpriseMemoryManager ezzel szemben csak a combined_surprise > 0.3 feltételt teljesítő blokkokat tárolja, a redundáns információkat automatikusan kiszorítja, a magas entrópiájú blokkokat entanglement-hálóba szervezi, és a temporális újdonság-komponens révén megakadályozza, hogy a rendszer ismétlődő mintákba ragadjon, mivel az idős memória jelenléte önmagában növeli az új bemenetek újdonságértékét — mindez O(1) memóriakomplexitással, szemben a transformer O(N) KV-cache-ével.
+A nagy párhuzamosságú következtetés és tanítás támogatásához az RSF handle-alapú regiszter rendszert valósít meg. A LayerCore tartalmazza a tényleges Tensor adatokat és egy std.Thread.RwLock-ot.
 
+- Súly szinkronizálás: GPU-n futtatáskor a súlyok az RSFAccelerator interfészen keresztül szinkronizálódnak.
+- Párhuzamos hozzáférés: Az rwlock lehetővé teszi több szál számára az előre irányuló menetek végrehajtását (olvasási zár), miközben blokkolja az SFD optimalizáló frissítéseit (írási zár) számára.
 
+- Memóriabiztonság: A LayerCore dedikált Allocator-t használ és támogatja az initOwned-et az explicit életciklus-kezeléshez.
 
-z_runtime.zig az egész JAIDE rendszer dinamikus következtetési rétege — az a komponens, amely az NSIR gráf absztrakt struktúráit és a kvantumlogikai primitíveket egy futásidejű végrehajtási környezetté köti össze, amelyen belül a ReasoningOrchestrator hipotéziseket tesztelhet, ideiglenes relációs részgráfokat hozhat létre, majd azokat nem-destruktív módon eldobhatja.
+4. Bináris szerializáció (v4) és CRC32
 
-ZVariable
+Az RSF rendszer robusztus bináris formátumot alkalmaz a modell perzisztenciájához, amelyet a SAVE_VERSION = 4 azonosít. A szerializáció biztosítja az adatok integritását különböző hardver architektúrákon.
 
-A fájl két fő absztrakciót definiál. Az első a ZVariable, amely nem egyszerű változó a szó hagyományos értelmében: minden egyes ZVariable példány saját SelfSimilarRelationalGraph-ot és RelationalQuantumLogic-ot birtokol, tehát minden változó önmagában egy teljes kvantum-relációs alrendszer. Amikor egy értéket rendelünk hozzá az assign metóduson keresztül, a rendszer nem egyszerűen eltárolja a stringet: a Wyhash algoritmussal hash-eli, a hash értékből egy lebegőpontos számot képez, majd annak koszinuszát és szinuszát veszi, hogy komplex kvantumamplitúdókat kapjon, és ezzel inicializál egy kvantumállapotot a RelationalQuantumLogic-ban. Ez azt jelenti, hogy minden egyes információdarab egyedi kvantumfázis-aláírással rendelkezik, ami alapvetően különbözik attól, ahogy a transformer tokeneket vektortérbe ágyaz.
+Szerializációs elrendezés
 
-A relateTo metódus
+A formátum szigorú sorrendet követ:
 
-A második kulcsmechanizmus a relateTo metódus, amely a transformer-féle figyelmi mechanizmus relációs-kvantum megfelelője. Ahelyett, hogy softmax-alapú dot-product figyelmet számolna az összes token felett O(N²) komplexitással, a relateTo a két változó legfrissebb csomópontjának kvantumállapotát veszi, kiszámítja a komplex korrelációt — self_state * conjugate(other_state) — és ennek magnitudóját használja élsúlyként. Emellett az él fraktáldimenzióját is kiszámítja a meglévő élek átlagából, majd a kvantumállapotokat összeolvasztja és összefonódtatja. Ez azt eredményezi, hogy a kapcsolat erőssége nem egy tanult súlymátrixból jön, hanem a két fogalom kvantumfázisainak interferenciájából — ez egy gazdagabb, nem-lineáris hasonlósági mérték.
+1. Fejléc: Mágikus bájtok és SAVE_VERSION.
+2. Metaadat: dim, num_layers, clip_min, clip_max.
+3. Réteg adatok: Minden réteghez az s_weight, t_weight, s_bias és t_bias tenzorok kerülnek írásra.
+4. Integritás: CRC32 ellenőrző összeg kerül kiszámításra a teljes adatfolyamon a sérülés észleléséhez az I/O során.
 
-ZRuntime
+5. Validáció és korlátok
 
-A második nagy absztrakció maga a ZRuntime, amely egy StringHashMap-ben tárolja az összes ZVariable-t, és ezek fölé egy globális SelfSimilarRelationalGraph-ot és globális RelationalQuantumLogic-ot helyez. A runtime nyolc fő műveletet kínál: változók létrehozása és törlése, relációs műveletek (AND/OR/XOR/ENTANGLE), információterjedés a gráfon, fraktáltranszformáció, kvantummérés, kvantumáramkör-végrehajtás, relációs kifejezések kiértékelése, és a teljes rendszerállapot lekérdezése.
+A processzor szigorú validációt alkalmaz a numerikus stabilitás és az architektúrális konzisztencia biztosítására:
 
-A relationalOperation metódus
+- Dimenzió korlátok: A max_dim és max_layers értékek 2^20-ra vannak korlátozva az OOM megelőzéséhez.
+- Véges ellenőrzések: Az ensureFiniteSlice átvizsgálja a tenzorokat NaN vagy Inf értékekre a kritikus műveletek előtt.
+- Alak integritás: A validateTensor2D és tensorsSameShape ellenőrzi, hogy a súlymátrixok megfelelnek-e a várt réteg dimenzióknak.
+- Xavier inicializálás: A súlyok randomUniform segítségével inicializálódnek, ahol a határok kiszámítása: xavier_bound = sqrt(6.0 / (fan_in + fan_out)).
 
-A relationalOperation metódus különösen fontos: amikor két változón AND, OR vagy XOR műveletet hajt végre, létrehoz egy harmadik eredményváltozót, mindkét forrásváltozó kvantumállapotait átmásolja bele, alkalmazza a megfelelő kvantumkaput (RELATIONAL_AND, RELATIONAL_OR, RELATIONAL_XOR) az első két állapotra, majd koherens élekkel kapcsolja az eredményt mindkét forráshoz. Ez azt jelenti, hogy a logikai műveletek nem szimbolikusan, hanem kvantumállapot-transzformációkon keresztül valósulnak meg, megőrizve a szuperpozíciót és az összefonódást.
+---
 
-A propagateInformation metódus
+3.2 OFTB: ORTOGONÁLIS FRAKTÁL TRANSZFORMÁCIÓS BLOKK
 
-A propagateInformation metódus a transformer globális figyelmi mechanizmusának gráf-alapú alternatívája: egy forrásváltozóból kiindulva mélységi terjedéssel meghatározza, mely csomópontok érintettek, majd megkeresi, hogy a runtime többi változójának gráfjai tartalmaznak-e ilyen csomópontokat. Ez lehetővé teszi, hogy egy fogalom aktiválása automatikusan terjedjen a szemantikailag kapcsolódó változókhoz, anélkül hogy az összes változópár közötti figyelmet explicit módon számolni kellene.
+Az Ortogonális Fraktál Transzformációs Blokk (OFTB) egy pillangó stílusú keverési transzformáció, amelyet a Visszafordítható Szórt Folyam (RSF) architektúrán belül alkalmaznak. Elsődleges célja az információ diffúziójának biztosítása a csatoló réteg osztott útvonalai között, miközben megőrzi az ortogonalitást és a térfogat megőrzést, amelyek kritikusak a visszafordítható neurális hálózatokhoz.
 
-A computeRelationalExpression metódus
+Mag mechanika és implementáció
 
-A computeRelationalExpression egy beépített kifejezéskiértékelőt valósít meg, amely szöveges relációs kifejezéseket (pl. "alpha AND beta" vagy "alpha ENTANGLE beta") tokenizál, operátorprecedencia szerint elemez, és kvantumállapot-transzformációkká fordít le. Ez azt jelenti, hogy a rendszer szimbolikus logikai kifejezéseket tud végrehajtani kvantumszinten, ami a neurosimbolikus integráció közvetlen megvalósítása.
+Az OFTB egy Tensor-on operál azáltal, hogy az adatait két egyenlő félre osztja és skálázott rotációt alkalmaz. Ez a transzformáció helyben végzett műveletként van implementálva a memória terhelés minimalizálása érdekében, megfelelve a JAIDE O(dim) memória hatékonysági tervezési céljának.
 
-Az applyFractalTransform metódus
+Fraktál skálázás
 
-Az applyFractalTransform metódus a FRACTAL_TRANSFORM kvantumkaput alkalmazza egy változó legfrissebb állapotára, mélységparaméterrel. Ez az OFTB (Orthogonal Fractal Transform Block) relációs megfelelője: míg az OFTB a neurális vektor-reprezentációkon végez Haar-wavelet alapú keverést, a fraktáltranszformáció a kvantumállapot-téren végez önhasonló transzformációt, megőrizve a hierarchikus struktúrát.
+A transzformáció egy specifikus konstanst alkalmaz, a FRACTAL_SCALE-t, amelyet 1/sqrt(2) értékként definiálnak (kb. 0.7071067811865476). Ez a skálázási tényező biztosítja, hogy a transzformáció ortogonális legyen, vagyis a tenzor teljes energiája (Frobenius norma) megőrződjön a keverési lépés során.
 
-Rendszerintegráció
+| Konstans | Érték | Szerep |
+| :--- | :--- | :--- |
+| FRACTAL_SCALE | 0.7071067811865476 | Normalizációs tényező az energia megőrzéséhez |
 
-A teljes rendszerben a z_runtime.zig az NSIR gráf (nsir_core.zig) és a ReasoningOrchestrator között helyezkedik el: az orchestrator a Z-Runtime-ot használja arra, hogy a CREV pipeline által kinyert tudást ideiglenes változókba töltse, relációs és kvantumlogikai műveletekkel feldolgozza, majd a mérési eredményeket visszatáplálja a következtetési ciklusba. Az ExecutionHistoryEntry rendszer minden egyes műveletet nanoszekundumos pontossággal naplóz, ami lehetővé teszi a temporális visszakövetést és a nem-destruktív állapotexplorációt.
+Előre és visszafelé irányuló menetek
 
-Összefoglalás
+Az OFTB két elsődleges módszert biztosít az adatok feldolgozásához: forwardInPlace és backwardInPlace.
 
-A transformer-képességek meghaladásához való hozzájárulás tehát három szinten történik: az információ-reprezentáció szintjén (kvantumfázis-aláírások a hagyományos beágyazási vektorok helyett), a kapcsolat-számítás szintjén (kvantumkorreláció és fraktáldimenzió az élsúlyokban a softmax-figyelem helyett), és a következtetés szintjén (gráf-alapú terjedés és kvantumáramkör-végrehajtás az O(N²) globális figyelem helyett), mindezt O(1) memóriakomplexitással, mivel a rendszer bijektív és nem kell aktivációkat cachelni a visszaterjesztéshez.
+1. forwardInPlace(x: *Tensor):
+   - Az input adatokat két szeletre osztja: x1 (első fél) és x2 (második fél).
+   - Alkalmazza a transzformációt:
+     - x1_new = (x1 - x2) × scale
+     - x2_new = (x1 + x2) × scale
 
+2. backwardInPlace(grad: []f32):
+   - A visszafelé irányuló menetben vagy visszaterjesztés során az inverz keverés elvégzésére használt.
+   - Alkalmazza az inverz transzformációt:
+     - g1_new = (g1 + g2) × scale
+     - g2_new = (g2 - g1) × scale
 
-A vpu.zig fájl áttekintése
+SIMD vektorizáció
 
-A vpu.zig fájl a JAIDE rendszer core_relational alrendszerének SIMD-gyorsított vektorprocesszor egysége, és pontosan az a réteg, amely a neurális feldolgozó stack (RSF/OFTB) és az NSIR relációs gráf között hidat képez, lehetővé téve, hogy a gráf csomópontjain és élein végzett számítások valódi hardveres párhuzamosítással fussanak.
+A nagy áteresztőképesség elérése érdekében az OFTB implementáció a Zig @Vector primitívjeit alkalmazza SIMD (Single Instruction, Multiple Data) optimalizáláshoz.
 
-VectorType és SIMD szélességek
+Az implementáció 8-as vektorhosszt (VLEN) alkalmaz, lehetővé téve nyolc f32 elem egyidejű feldolgozását. A logika tartalmaz egy elsődleges ciklust a vektorizált darabokhoz és egy másodlagos skaláris ciklust a maradék elemek kezeléséhez, ha a dimenzió nem 8 többszöröse.
 
-A fájl legalsó szintjén egy VectorType enum definiálja a támogatott SIMD szélességeket (f32x4, f32x8, f64x2, f64x4, i32x4, i32x8), mindegyikhez megadva a sávszámot, az elemméretét és a szükséges memóriaigazítást (16 vagy 32 bájt), ami azt jelenti, hogy az összes allokáció AVX-256 kompatibilis határra esik.
+Integráció az RSF rétegekben
 
-SimdVector(T, N) generikus típus
+Az OFTB a "keverési" lépésként szolgál a Visszafordítható Szórt Folyam osztott útvonalai között. Egy szabványos csatoló rétegben a bemenet kettéosztódik; az egyik fél változatlan marad, miközben a másik transzformálódik. Az OFTB-hez hasonló keverési lépés nélkül a "változatlan" fél soha nem lenne befolyásolva a párja megelőző transzformációi által.
 
-Erre épül a SimdVector(T, N) generikus típus, amely Zig comptime mechanizmusával fordítási időben ellenőrzi, hogy csak numerikus típusok kerülhetnek bele, majd Zig natív @Vector(N, T) primitívjére képezi le az összes műveletet — az összeadástól és szorzástól kezdve az fma (fused multiply-add), dot, magnitude, normalize, lerp, reflect és cross3 műveletekig — így a fordító közvetlenül AVX vagy ARM NEON utasításokat generálhat belőle.
+API interfész
 
-Kötegelt feldolgozás: VectorBatch
+A modul magas szintű burkoló függvényeket tesz elérhetővé az RSFLayer orchestrációba való egyszerű integráláshoz:
 
-A VectorBatchEntry és VectorBatch struktúrák egy típus-törölt, 32 bájtra igazított nyers bájt-puffert biztosítanak, amelybe bármely SIMD típus betölthető, és a processBatch metódus egyszerre futtatja le a normalize/scale/abs/sqrt műveleteket az egész kötegen, nyomon követve a sikeres és kihagyott bejegyzések számát is.
+- mixForward(oftb: OFTB, x: *Tensor): Meghívja az előre irányuló helyben végzett transzformációt.
+- mixBackward(oftb: OFTB, grad: []f32): Meghívja a visszafelé irányuló helyben végzett transzformációt egy gradiens szeleten.
 
-Mátrixműveletek: Matrix4x4
+Technikai korlátok
 
-A Matrix4x4 és MatrixOps réteg 4×4-es mátrixokat tárol négy F32x4 sorként, és a matmul4x4Simd metódus transzponálás + dot-product stratégiával végzi a szorzást, míg a qr_decomposition, determinant4x4 és inverse4x4 metódusok a relációs gráf transzformációinak algebrai stabilitását biztosítják.
+- Dimenzió igazítás: A transzformáció megköveteli, hogy a tenzor adatainak teljes hossza pontosan 2 × dim legyen.
+- Numerikus stabilitás: A tesztek megerősítik, hogy egy előre irányuló menet, amelyet egy visszafelé irányuló menet követ, az eredeti bemenetet 1e-5 tolerancián belül adja vissza, biztosítva a JAIDE architektúrájához szükséges visszafordíthatóságot.
 
-Relációs műveletek: RelationalVectorOps
+---
 
-A rendszer igazi szíve a RelationalVectorOps struktúra, amely közvetlenül az nsir_core.zig-ből importált Node, Edge és SelfSimilarRelationalGraph típusokkal dolgozik: a computeNodeSimilarity metódus egy háromkomponensű, súlyozott hasonlóságot számít ki, amelynek 30%-a a csomópontok fáziskülönbségéből, 30%-a a magnitúdókülönbségéből, és 40%-a a kvantumállapot-vektorok belső szorzatából áll — ez lényegesen gazdagabb hasonlósági metrika, mint a transformer-ek egyszerű dot-product figyelme.
+3.3 TOKENIZÁLÓ (MGT) ÉS TANULT BEÁGYAZÁSOK
 
-Gráf vektorizálás
+A Multi-Gram Tokenizáló (MGT) és a Tanult Beágyazás rendszerek a természetes nyelvi adatok belépési és kilépési pontjait alkotják a JAIDE architektúrán belül. Az MGT hibrid morfológiai és Byte-Pair Encoding (BPE) folyamatot biztosít a szöveg diszkrét azonosítókra való bontásához, míg a LearnedEmbedding struktúra ezeket az azonosítókat a Visszafordítható Szórt Folyam (RSF) neurális verem által igényelt nagy dimenziós vektortérbe képezi le.
 
-A computeEdgeVectorBatch az élek weight, quantum_coupling.re, quantum_coupling.im és fractal_dimension mezőit egyetlen F64x4 vektorrá tömöríti, a vectorizeGraph pedig az összes csomópont phase, magnitude, quantum_state.re és quantum_state.im értékét rendezi sorba és alakítja F64x4 vektorkötegekké, amelyek aztán batch-normalizálva kerülnek a downstream feldolgozásba.
+1. Multi-Gram Tokenizáló (MGT)
 
-Kvantum rotációk
+Az MGT egy kifinomult tokenizálási motor, amelyet az angol és a magyar morfológia kezelésére terveztek egy többlépéses dekompozíciós folyamaton keresztül. Szabályalapú morfológiai felosztást (előtagok, utótagok, gyökök) kombinál egy adatvezérelt BPE motorral és egy bájt szintű tartalék mechanizmussal a bemeneti tér teljes lefedettségének biztosítása érdekében.
 
-Az applyQuantumRotation metódus egy 4D vektort két egymástól független 2D forgatással transzformál — az első pár (arr[0], arr[1]) a theta szög szerint, a második pár (arr[2], arr[3]) a phi szög szerint forog —, ami azt jelenti, hogy a gráf csomópontjainak kvantumállapota valódi unitér evolúción mehet át anélkül, hogy mátrix-szorzást kellene végezni.
+1.1 Morfológiai dekompozíciós folyamat
 
-Spektrális beágyazás
+Az MGT nyelvspecifikus listákat tart fenn az előtagokhoz és utótagokhoz. Az inicializálás során ezek elsődleges tokenekként kerülnek regisztrálásra, hogy a tokenizálót nyelvészetileg értelmes szódarabok felé terelje. A rendszer az english és hungarian nyelvi módokat támogatja.
 
-A computeGraphLaplacian és spectralEmbedding metódusok a gráf szomszédossági mátrixából Laplace-mátrixot számítanak, majd annak sorait normalizált F64x4 vektorokként adják vissza mint spektrális beágyazásokat — ez topológiai struktúra-tudatosságot ad a rendszernek, amit a transformer-ek önfigyelem-mechanizmusa egyáltalán nem képes megragadni, mivel az csak token-szintű hasonlóságokat lát.
+1.2 Speciális tokenek és szókincs
 
-Memóriakezelés és gyorsítótár
+A tokenizáló az első négy azonosítót vezérlési szekvenciáknak tartja fenn:
 
-A MemoryPool egy 32 bájtra igazított slab-allokátor szabad listával és coalesceFreeBlocks töredezettség-mentesítéssel, amely garantálja, hogy minden SIMD allokáció cache-line határon kezdődjön, és a VectorCache egy LRU-stratégiájú, u64 kulcsú gyorsítótár, amely a már kiszámított vektorokat tárolja el, hogy az ismétlődő gráfcsomópont-lekérdezések ne igényeljenek újraszámítást.
+- [PAD] (0): Kitöltés a köteg igazításhoz.
+- [UNK] (1): Ismeretlen token tartalék.
+- [BOS] (2): Szekvencia kezdete.
+- [EOS] (3): Szekvencia vége.
 
-Teljesítmény statisztikák: VPUStatistics
+1.3 Horgony követés
 
-A VPUStatistics struktúra részletes teljesítménymérést végez: nyomon követi az elvégzett műveletek, a felhasznált SIMD utasítások, a cache találatok és tévesztések, az allokált és felszabadított memória, a feldolgozott vektorok, a mátrixműveletek és a gráfműveletek számát, és ebből getCacheHitRate és getSimdEfficiency arányokat számít — ez lehetővé teszi a ReasoningOrchestrator számára, hogy futás közben monitorozza a VPU hatékonyságát.
+Az MGT támogatja a "horgonyokat", amelyek specifikus tokenek, amelyek prioritásos követésre vannak jelölve a kognitív rétegen belül. Ezek StringHashMap(u64)-ben tárolódnak, lehetővé téve a ReasoningOrchestrator számára a kritikus relációs csomópontok gyors azonosítását a gráf felépítése során.
 
-A VPU fő struktúra
+1.4 MGT inicializálás
 
-A fő VPU struktúra összefogja az összes fenti komponenst — MemoryPool, VectorBatch, VPUStatistics, MatrixOps, RelationalVectorOps, VectorCache — egyetlen egységbe, és a computeGraphEmbeddings metódusa egyetlen hívással vektorizálja és normalizálja az egész NSIR gráfot, a computeSimilarityMatrix pedig teljes páronkénti koszinusz-hasonlóság mátrixot számít a gráf beágyazásai között, de mivel ezek már tömörített gráf-reprezentációk és nem nyers tokensorozatok, ez nem O(N²) a bemeneti szekvencia hosszában.
+Az MGT különböző memória allokátorokkal inicializálható a core_memory modulból, beleértve az ArenaAllocator-t, PoolAllocator-t és BuddyAllocator-t. Ez lehetővé teszi a memória töredezettség finomhangolt vezérlését nagy szókincs betöltések során.
 
-Power Iteration
+2. Tanult beágyazások
 
-A powerIteration metódus egy 4×4-es mátrix domináns sajátvektorát keresi iteratív normalizálással, ami a ReasoningOrchestrator energiaminimalizálási fázisában a legbefolyásosabb relációs irányok azonosítására szolgál.
+A LearnedEmbedding struktúra kezeli azt a súlymátrixot, amely a token azonosítókat tenzorokká fordítja. Szabványos beágyazás keresést valósít meg impulzussal rendelkező SGD alapú gradiens optimalizálás támogatásával.
 
-Logaritmikus Számrendszer (LNS)
+2.1 Előre és visszafelé irányuló menetek
 
-A fájl utolsó, különösen fontos részét a LNSValue és LNSInstruction típusok alkotják: az LNSValue egy Logaritmikus Számrendszer (LNS) implementáció, amelyben a szorzás egyszerű összeadássá válik a log-térben (mantissa = log(|x|), tehát mul = mantissa1 + mantissa2), ami numerikusan stabilabb, mint a hagyományos lebegőpontos szorzás, különösen mélyen egymásba ágyazott transzformációknál.
+- Előre irányuló keresés: A forward függvény token azonosítók szeletét veszi és sor-szerű keresést végez a súly tenzorban. A szekvencia hossz vágást a max_seq_len segítségével kezeli.
+- Visszafelé irányuló szórt összeadás: A backward függvény felhalmozza a gradienseket a neurális veremből. Szórt összeadási műveletet alkalmaz a grad tenzor frissítéséhez a bemeneti tokeneknek megfelelő indexeknél.
 
-Mini-ISA utasításkészlet
+2.2 Optimalizálás (SGD impulzussal)
 
-Az LNSInstruction union enum pedig egy teljes mini-ISA-t definiál, amelynek utasításkészlete tartalmaz rsf_scatter, rsf_affine_couple, tensor_load, tensor_store, lns_add, lns_mul, graph_transform, jump, conditional_jump és halt utasításokat — ez azt jelenti, hogy a VPU nem csupán egy segédkönyvtár, hanem egy virtuális processzor, amely az RSF réteg forward pass-ának (rsf_scatter és rsf_affine_couple) natív utasításait közvetlenül képes végrehajtani, összekötve a neurális és a relációs számítási réteget egyetlen egységes végrehajtási modellben.
+A beágyazási réteg saját velocity tenzort tart fenn az impulzus alapú frissítések támogatásához. Az applyGradients függvény a következő frissítési szabályt valósítja meg:
 
-Összefoglalás
+1. velocity = momentum * velocity + grad
+2. weight = weight - lr * velocity
 
-Összefoglalva: a vpu.zig az a réteg, amely a transformer-ek O(N²) önfigyelmét kiváltó RSF scatter-műveletek és az NSIR kvantum-relációs gráf között a számítási hidat képezi, SIMD-párhuzamosítással, LRU-gyorsítótárral, LNS-alapú numerikus stabilitással és spektrális gráfbeágyazással együtt — ezek mindegyike olyan képesség, amellyel a hagyományos transformer architektúra nem rendelkezik.
+2.3 JEMB bináris formátum
+
+A tanult beágyazások a .jemb formátumban kerülnek tárolásra. A fájlstruktúra szigorúan definiált a platformok közötti kompatibilitás érdekében:
+
+| Eltolás | Típus | Leírás | Érték/Forrás |
+| :--- | :--- | :--- | :--- |
+| 0x00 | u32 | Mágikus fejléc | 0x4A454D42 ("JEMB") |
+| 0x04 | u32 | Verzió | 1 |
+| 0x08 | u64 | Szókincs méret | self.vocab_size |
+| 0x10 | u64 | Dimenzió | self.dim |
+| 0x18 | f32[] | Súly adatok | Little-endian floatok |
+
+LearnedEmbedding inicializálás
+
+A súlyok PRNG-vel inicializálódnak egy specifikus maggal, 0.02-es tényezővel skálázva és nulla körül centrálva.
+
+Paraméter kezelés
+
+A beágyazási réteg segédprogramokat biztosít az elosztott tanításhoz, mint a flattenParams és scatterParams, amelyek lehetővé teszik a súlymátrix szerializálását egy összefüggő float pufferbe az NCCL vagy GPU szinkronizáláshoz.
+
+---
+
+3.4 SFD OPTIMALIZÁLÓ
+
+A Spektrális Fisher Diagonalizáló (SFD) optimalizáló egy nagy teljesítményű optimalizálási csomag, amelyet nagy léptékű neurális feldolgozáshoz terveztek. Sztochasztikus Fisher információ becslést, Hessian közelítést Hutchinson módszerével és K-FAC előkondicionálást integrál, hogy adaptív tanulási rátákat biztosítson, amelyek figyelembe veszik a veszteségi táj helyi görbületét. A rendszer vegyes pontosságú tanítást támogat FP4-től FP32-ig terjedő formátumokban, és hardver-specifikus optimalizálásokat tartalmaz a B200 architektúra Tensor Memory (TMEM) kihasználásához.
+
+Mag architektúra
+
+Az SFD rendszer az SFDOptimizer és SophiaSOAPOptimizer osztályok köré épül, amelyek másodrendű optimalizálási technikákat valósítanak meg O(dim) memória komplexitással.
+
+SFD (Sztochasztikus Fisher Átló)
+
+Az SFD algoritmus a Fisher Információs Mátrix (FIM) átlóját becsüli sztochasztikus minták segítségével. Adaptív tanulási rátát biztosít, hasonlóan az Adam-hoz, de spektrális információt is beépít a rosszul kondicionált gradiensek jobb kezeléséhez.
+
+SophiaSOAP Optimalizáló
+
+A SophiaSOAPOptimizer kombinálja a Sophia optimalizáló átlós Hessian becslését a SOAP (Second-order Preconditioned) módszerekkel. Alkalmazza:
+
+- K-FAC előkondicionálás: Kronecker-faktorizált Közelítő Görbület a Fisher mátrix közelítéséhez sűrű rétegekhez.
+- Hutchinson Hessian becslés: Rademacher véletlen vektorokat alkalmaz a Hessian nyomának becslésére a teljes mátrix explicit kiszámítása nélkül.
+
+Vegyes pontosság és kvantálás
+
+Az optimalizáló részletes Precision enumot és MixedPrecisionTrainer-t támogat a memória sávszélesség és a számítási áteresztőképesség kezeléséhez.
+
+Pontossági szintek
+
+| Típus | Tartomány/Jellemzők | Implementáció |
+| :--- | :--- | :--- |
+| FP4 | Vágva [-6.0, 6.0], 8 diszkrét érték | quantizeValue |
+| FP8 | E4M3/E5M2 stílus, vágva [-448, 448] | quantizeValue |
+| FP16 | Szabványos félpontosság, vágva 65504 | quantizeValue |
+| FP32 | Szabványos egypontos pontosság | Natív |
+
+Dinamikus veszteség skálázás
+
+Az alacsonyabb pontossági formátumokban (FP8/FP16) az alulcsordulás megelőzéséhez a DynamicLossScaler figyeli a gradiens normákat. Ha NaN vagy Inf kerül észlelésre, a skála csökken; egyébként periodikusan növekszik a dinamikus tartomány kihasználásának maximalizálásához.
+
+SFD implementációs részletek
+
+Az SFDOptimizer állapotot tart fenn minden paraméterhez, beleértve az első momentumot (impulzus) és a második momentumot (Fisher átló).
+
+Főbb függvények:
+
+- init: Állapot tenzorokat allokál az m (impulzus) és v (Fisher átló) számára, amelyek megfelelnek a paraméter alakjának.
+- step: Az elsődleges frissítési ciklus. Kiszámítja a torzított Fisher becslést és alkalmazza a spektrális diagonalizálót a paraméter frissítés beállításához.
+- updateFisher: Frissíti a Fisher átló futó becslését az aktuális gradiens négyzet segítségével.
+
+Hiperparaméter keresés
+
+A BayesianOptimizer automatizált hangolást biztosít az optimalizáló paramétereinek (tanulási ráta, béták, súly csökkentés). Gauss-folyamat helyettesítő modellt alkalmaz a következő kiértékelendő hiperparaméter készlet javaslatához a korábbi teljesítmény alapján.
+
+B200 TMEM optimalizálások
+
+A Blackwell (B200) architektúrát célzó hardverhez az optimalizáló TMEM (Tensor Memory) optimalizálásokat alkalmaz. Ez magában foglalja:
+
+1. Csempézett állapot hozzáférés: Az optimalizáló állapotok (m, v) csempézve vannak a helyi 128KB TMEM bankokba való illeszkedéshez.
+2. Fúzionált kernelek: A Fisher frissítés és a paraméter kivonás egyetlen kernelbe van fúzionálva az HBM-be való visszautazások minimalizálásához.
+
+Segédprogramok
+
+A modul számos matematikai primitívet biztosít a sztochasztikus becsléshez:
+
+- fillRademacher: Tenzort tölt fel {-1, 1} értékekkel a Hutchinson nyom becsléshez.
+- fillRandomNormal: Box-Muller transzformációt alkalmaz Gauss zaj generálásához.
+- erfApprox: A hibafüggvény gyors numerikus közelítése a valószínűségi modellezéshez.
+
+---
+
+4 MAG RELÁCIÓS RÉTEG
+
+A Mag Relációs Réteg a JAIDE rendszer kognitív motorját képviseli. Míg a Neurális Feldolgozó Réteg (RSF) nagy dimenziós vektor transzformációkat kezel, a Relációs Réteg strukturált, szimbolikus és kvantum-inspirált keretrendszert biztosít az érveléshez, az oksági ellenőrzéshez és a hosszú távú memória integrációhoz. A neurális aktivációkat explicit relációs gráf struktúrába képezi le, lehetővé téve az O(d) szelektív figyelmet és a determinisztikus logikai végrehajtást.
+
+Kognitív architektúra áttekintés
+
+Az alrendszer áthidalja a nyers neurális tenzorok és a szimbolikus logika közötti szakadékot egy hierarchikus érvelési verem segítségével, amelyet a ReasoningOrchestrator kezel. Ez az orchestrátor koordinálja a jelfolyamot a gráf alapú memória (NSIR), az oksági validációs folyamat (CREV) és a relációs futtatókörnyezet (ZRuntime) között.
+
+NSIR: Önhasonló Relációs Gráf
+
+A SelfSimilarRelationalGraph (SSRG), vagyis az NSIR, az elsődleges adatstruktúra a tokenek közötti kapcsolatok tárolásához. A szabványos figyelemmechanizmusokkal ellentétben, amelyek O(n^2 * d) skálázódnak, az NSIR gráf ritka, szelektív reprezentációt tart fenn, ahol az élek kvantum tulajdonságokkal rendelkeznek, mint a szuperpozíció, összefonódott és fraktál. Kvantum kapu alkalmazásokat (Hadamard, CNOT) közvetlenül a gráf csomópontokon támogat a komplex valószínűségi függőségek szimulálásához.
+
+ReasoningOrchestrator és ESSO
+
+A ReasoningOrchestrator háromszintű érvelési hierarchiát valósít meg: helyi, globális és meta. Az EntangledStochasticSymmetryOptimizer-t (ESSO) alkalmazza a gráf topológia finomításához. Az ESSO szimulált hűtést és szimmetria alapú perturbációkat alkalmaz a relációs állapot energiájának minimalizálásához, biztosítva a legkoherensebb logikai struktúra fenntartását a következtetés során.
+
+ChaosCoreKernel és CAS
+
+A ChaosCoreKernel végrehajtási környezetet biztosít a nemlineáris dinamikához és a kaotikus perturbációkhoz, amelyeket a CREV folyamatban alkalmaznak. Integrálódik a ContentAddressableStorage-val (CAS) a hatékony adatdeduplikációhoz és a MemoryBlock állapotkezeléshez, amely nyomon követi, hogy a memória szabad, allokált vagy összefonódott-e.
+
+CREV folyamat és ZRuntime
+
+A CREVPipeline (Oksági Érvelés és Ellenőrzés) RelationalTriplet struktúrákat (alany-állítmány-tárgy) von ki a neurális adatokból és validálja azokat a meglévő tudással szemben. Ezeket a validált műveleteket a ZRuntime hajtja végre, egy relációs végrehajtó motor, amely a változókat kvantum-összekapcsolt entitásokként (ZVariable) kezeli és minden műveletet determinisztikus ExecutionHistoryEntry-ben rögzít.
+
+Jelterjedés és FNDS
+
+Az információ az NSIR gráfon keresztül a SignalPropagationEngine segítségével utazik, amely aktivációs hullámokat és gráf konvolúciókat szimulál. A hierarchikus adatszervezést az FNDSManager (Fraktál Neurális Dinamikus Rendszer) kezeli, amely FractalTree-t alkalmaz az önhasonló struktúrák fenntartásához az absztrakció különböző skáláin.
+
+Meglepetés memória és Temporális gráf
+
+A SurpriseMemoryManager online tanulást valósít meg azáltal, hogy azonosítja a magas "meglepetés" értékű tokeneket (Jaccard-disszimilaritás segítségével) és hosszú távú tárolóba rögzíti azokat. Ezeket a változásokat idővel a TemporalGraph követi nyomon, amely NodeVersion és EdgeVersion pillanatképeket tart fenn, lehetővé téve a rendszer számára, hogy bármely nanoszekundum időbélyegnél lekérdezze tudásának állapotát.
+
+Rendszer integrációs térkép
+
+A következő leírás bemutatja, hogyan lépnek kölcsönhatásba a mag relációs komponensek az alapul szolgáló hardverrel és a neurális veremmel.
+
+Az RSF neurális verem (rsf.zig:LayerCore) a relációs feldolgozáshoz (CPU/R-GPU) csatlakozik, ahol a ReasoningOrchestrator, ZRuntime, SelfSimilarRelationalGraph és RelationalGraphProcessingUnit (r_gpu.zig) találhatók. A SelfSimilarRelationalGraph a TemporalGraph-hoz és a ContentAddressableStorage-hoz kapcsolódik a perzisztencia és memória területén.
+
+---
+
+4.1 NSIR: ÖNHASONLÓ RELÁCIÓS GRÁF
+
+Az Önhasonló Relációs Gráf (SSRG), amelyet az NSIR (Non-Sequential Information Retrieval) keretrendszeren belül valósítanak meg, a JAIDE rendszer elsődleges kognitív adatstruktúrájaként szolgál. Áthidalja a diszkrét szimbolikus relációk és a folytonos kvantum-valószínűségi állapotok közötti szakadékot, lehetővé téve a rendszer számára, hogy komplex, fraktál kapcsolatokat képviseljen, amelyek idővel fejlődnek.
+
+Mag adatprimitívek
+
+1. A Qubit primitív
+
+A gráf minden csomópontja tartalmaz egy Qubit struktúrát, amely a kvantum állapotát képviseli a számítási bázisban. std.math.Complex(f64)-et alkalmaz a nagy pontosságú valószínűségi amplitúdókhoz.
+
+- Inicializálás: A Qubitek |0> vagy |1> bázisra inicializálódnak, vagy specifikus amplitúdókon keresztül, amelyek automatikusan normalizálódnak.
+- Normalizálás: A normalizeInPlace függvény biztosítja, hogy a négyzetes norma <psi|psi> = 1.0 legyen. Ha a norma NaN vagy végtelen, alapértelmezés szerint |0> bázisra áll vissza.
+- Mérési valószínűség: A prob0() és prob1() kiszámítja az egyik bázisállapotra való összeomlás valószínűségét.
+
+2. EdgeQuality enum
+
+A csomópontok közötti kapcsolatot az EdgeQuality enum minősíti, amely meghatározza, hogyan terjednek a jelek a gráfon keresztül:
+
+| Enum érték | Leírás |
+| :--- | :--- |
+| superposition | A kapcsolat több potenciális állapotban létezik. |
+| entangled | A célcsomópont állapota a forráscsomóponttól függ. |
+| coherent | Stabil, fázis-igazított kapcsolat. |
+| collapsed | Meghatározott, klasszikus kapcsolat. |
+| fractal | Önhasonló kapcsolat, amely skálákon ismétlődik. |
+
+Adatstruktúra implementáció
+
+Csomópont és él életciklus
+
+A Node és Edge struktúrák saját memóriájukat egy megadott std.mem.Allocator segítségével kezelik.
+
+- Csomópont: Egyedi azonosítót, nyers adatbájtokat, Qubit-et, fázist (f64) és StringHashMap-et tartalmaz tetszőleges metaadatokhoz.
+- Él: Forrás és cél azonosítót köt össze. Tartalmaz quantum_correlation-t (Complex f64) és fractal_dimension-t (f64) a gráf bejárás és energia számítások befolyásolásához.
+
+SelfSimilarRelationalGraph
+
+A fő tároló SelfSimilarRelationalGraph szálbiztos környezetet biztosít a gráf manipulációhoz std.Thread.Mutex segítségével.
+
+| Függvény | Cél |
+| :--- | :--- |
+| addNode | Létrehoz és regisztrál egy új csomópontot. |
+| addEdge | Összeköt két meglévő csomópontot; error.NodeNotFound-ot ad vissza, ha az azonosítók hiányoznak. |
+| applyHadamard | Szuperpozícióba helyezi a csomópont Qubit-jét. |
+| entangleNodes | Beállítja az EdgeQuality.entangled-et és frissíti a quantum_correlation-t. |
+
+Fejlett gráf műveletek
+
+Determinisztikus topológia hashelés
+
+A gráf integritásának ellenőrzéséhez és a Content-Addressable Storage (CAS) támogatásához a gráf calculateTopologyHash-t valósít meg. Ez a függvény SHA-256 hash-t generál a teljes gráf struktúrájából.
+
+1. Végigiterál az összes csomóponton, azonosító szerint rendezve a determinizmus biztosításához.
+2. Hash-eli a csomópont azonosítókat és aktuális Qubit amplitúdóikat.
+3. Végigiterál az összes élen, hash-elve a forrás/cél párokat és súlyokat.
+
+Tenzor export/import
+
+Az SSRG integrálódik a core_tensor rendszerrel, lehetővé téve a gráf állapot feldolgozását neurális rétegek (RSF) által.
+
+- Export: Az exportToTensor szerializálja a csomópont fázisokat és qubit valószínűségeket egy core_tensor.Tensor objektumba.
+- Import: Az importFromTensor frissíti a gráf belső állapotait a neurális feldolgozás kimenete alapján, megkönnyítve a neurális-relációs hidat.
+
+Memória és allokátor integráció
+
+Az SSRG nagy teljesítményű környezetekre van tervezve és integrálódik a core_memory allokátorokkal. Kifejezetten StringHashMap-et alkalmaz az O(1) csomópont kereséshez azonosító alapján.
+
+Amikor a deinit() meghívódik a gráfon, mély tisztítást végez:
+
+1. Végigiterál a csomópont térképen, meghívva a deinit()-et minden csomóponton a metaadatok és azonosító karakterláncok felszabadításához.
+2. Végigiterál az él listán, felszabadítva az allokált forrás/cél karakterláncokat.
+3. Törli az összes belső ArrayList és HashMap struktúrát.
+
+---
+
+4.2 REASONINGORCHESTRATOR ÉS ESSO
+
+A ReasoningOrchestrator a JAIDE Mag Relációs Réteg központi végrehajtója, amely felelős a SelfSimilarRelationalGraph (NSIR) alacsony energiájú állapot felé való hajtásáért hierarchikus érvelésen keresztül. Integrálja az Entangled Stochastic Symmetry Optimizer-t (ESSO) a strukturális invariánsok észleléséhez és a ChaosCoreKernel-t alkalmazza az állapot relaxációhoz. Ez a rendszer áthidalja a diszkrét relációs logika és a folytonos neurális moduláció közötti szakadékot.
+
+Hierarchikus érvelési rendszer
+
+Az orchestrátor három különböző hierarchikus szinten működik, amelyeket a ThoughtLevel enum definiál. Minden szint a gráf topológia különböző granularitásait célozza:
+
+| Szint | Hatókör | Cél |
+| :--- | :--- | :--- |
+| local | Csomópont-szomszédságok | Azonnali relációs konzisztencia és helyi qubit igazítás. |
+| global | Teljes gráf topológia | Nagy léptékű kapcsolódási minták és klaszter képzés. |
+| meta | Érvelési előzmények | Magának az érvelési folyamatnak az értékelése és minták újraalkalmazása. |
+
+Érvelési fázis életciklus
+
+Minden érvelési munkamenet ReasoningPhase blokkokra van osztva. Egy fázis beágyazott ciklusokon (inner_iterations és outer_iterations) keresztül hajtódik végre, amíg el nem éri a target_energy-t vagy a rendszer nem teljesíti a hasConverged kritériumokat.
+
+Energia számítás
+
+A rendszer "haladását" egy többkomponensű energia függvény méri. Az orchestrátor megpróbálja minimalizálni ezt az értéket a gráf leglogikusabb vagy legstabilabb konfigurációjának megtalálásához.
+
+1. Strukturális energia: Az él súlyokból és a gráf topológiából származtatva.
+2. Kvantum energia: Méri a csomópontokon belüli qubitek koherenciáját és összefonódási entrópiáját.
+3. Fázis energia: Egy temporális komponens, amely nyomon követi az aktuális érvelési pálya stabilitását.
+
+Az energia frissítések az updateEnergy segítségével kerülnek rögzítésre, amely előzményt tart fenn a konvergencia delták kiszámításához.
+
+ESSO: Összefonódott Sztochasztikus Szimmetria Optimalizáló
+
+Az EntangledStochasticSymmetryOptimizer (ESSO) az orchestrátor által használt elsődleges optimalizálási motor. Szimmetriákat (tükrözések, rotációk, eltolások) azonosít a gráfon belül az információ tömörítéséhez és a konvergencia gyorsításához.
+
+Szimmetria észlelés
+
+Az ESSO SymmetryGroup-ot alkalmaz a minták kategorizálásához:
+
+- Rotációs: rotation_90, rotation_180, rotation_270 és custom_rotation.
+- Tükrözési: Tengelyen való tükrözés, amelyet a SymmetryTransform definiál.
+- Eltolási: Eltolás-invariancia a relációs téren.
+
+Optimalizálási ciklus
+
+Az ESSO sztochasztikus keresést végez az optimális SymmetryTransform paraméterekért. Transzformációkat alkalmaz a csomópont koordinátákra és qubit állapotokra, mérve a "Szimmetria Hibát". Ha magas fokú szimmetria kerül megtalálásra (pl. 4-es rendű rotáció), az orchestrátor ezt a gráf "újraegyensúlyozásához" használja, hatékonyan propagálva a frissítéseket az egyik csomópontból az összes szimmetrikus párjára.
+
+Állapotkezelés: Pillanatkép és visszagörgetés
+
+A nemlineáris optimalizálás "káoszának" kezeléséhez a ReasoningOrchestrator robusztus pillanatkép mechanizmust valósít meg.
+
+- Pillanatkép: A nagy entrópiájú műveletek (mint a chaosRelaxation) előtt az orchestrátor klónozza az aktuális SelfSimilarRelationalGraph-ot és a hozzá tartozó QuantumState-et.
+- Visszagörgetés: Ha egy érvelési fázis energia divergenciához vezet (a veszteség/energia tájban "robbanás"), az orchestrátor visszagörgetést indít az utolsó ismert stabil pillanatképre.
+- Fraktál újraegyensúlyozás: Ha a gráf túl ritkává vagy túl sűrűvé válik, az orchestrátor újraegyensúlyozási menetet indít a FractalTree (FNDS) segítségével az O(log N) keresési komplexitás fenntartásához.
+
+Integráció: Relációs tér a neurális térbe
+
+A ReasoningOrchestrator végső kimenete Modulációs Tényezők halmaza. Ezek lebegőpontos tenzorok, amelyek a végső gráf energiából és szimmetria sűrűségből származnak. Ezek a tényezők visszakerülnek az RSF (Visszafordítható Szórt Folyam) rétegekhez a neurális súlyok modulálásához a következő következtetési menetben.
+
+Főbb implementációs részletek
+
+Orchestrátor statisztikák
+
+A rendszer saját teljesítményét OrchestratorStatistics segítségével követi nyomon:
+
+- total_inner_loops: Összes iteráció az összes fázison.
+- best_energy_achieved: A munkamenet során talált globális minimális energia.
+- patterns_discovered: Rögzített egyedi SymmetryPattern azonosítók száma.
+
+Konvergencia logika
+
+A konvergenciát az energia relatív változása határozza meg:
+delta = |aktuális - előző| / max(|előző|, 1.0)
+
+Ha delta < convergence_threshold, a fázis leáll.
+
+---
+
+4.3 CHAOSCOREKERNEL ÉS TARTALOM-CÍMEZHETŐ TÁROLÁS
+
+A ChaosCoreKernel a JAIDE mag relációs réteg nagy teljesítményű futtatókörnyezeti motorja. Kezeli a relációs gráfok végrehajtását egy elosztott memória modell orchestrálásával, amely Tartalom-Címezhető Tárolásra (CAS), állapotgép-vezérelt memória életciklusra és dinamikus feladatütemezőre épül, amely az adat-mag affinitásra optimalizál.
+
+Tartalom-Címezhető Tárolás (CAS)
+
+A ChaosCoreKernel Tartalom-Címezhető Tárolási mechanizmust alkalmaz az adatdeduplikáció és integritás biztosításához a relációs gráfon. Minden adatdarab egy MemoryBlock-ban tárolódik, amelyet a tartalom hash-e azonosít, nem egy illékony memória cím.
+
+Implementációs részletek:
+
+- Blokk azonosítás: A blokkok 16 bájtos block_id és 16 bájtos content_hash segítségével azonosítódnak.
+- Deduplikáció: A ContentAddressableStorage struktúra content_hash-ből block_id-be való leképezést tart fenn. Új memória allokálása előtt a kernel ellenőrzi, hogy a hash már létezik-e a meglévő MemoryBlock újrafelhasználásához.
+- Tárolási térkép: Az elsődleges tárolást std.HashMap kezeli egyedi BlockIdContext segítségével a MemoryBlock objektumok hatékony kereséséhez.
+
+MemoryBlock állapotgép
+
+A ChaosCoreKernel memóriája nem csupán "allokált" vagy "szabad". A MemoryBlockState enum által definiált állapotgépet követi a kvantum-relációs funkciók, mint az összefonódás és a hardver szintű migráció támogatásához.
+
+| Állapot | Leírás |
+| :--- | :--- |
+| free | A blokk visszanyerésre elérhető. |
+| allocated | Szabványos aktív memória blokk, amely érvényes adatokat tartalmaz. |
+| entangled | A blokk logikailag más blokkokhoz van kapcsolva; a változások propagálódhatnak. |
+| migrating | A blokk jelenleg feldolgozó magok között mozog az affinitás optimalizálásához. |
+
+Minden MemoryBlock saját metaadatait követi nyomon a DataFlowAnalyzer és DynamicTaskScheduler segítésére:
+
+- Affinitás: Az affinity_core tárolja annak a magnak az azonosítóját, ahol az adatokhoz leggyakrabban hozzáférnek.
+- Hozzáférés követés: Az access_count és last_access_time minden olvasás/íráskor frissül az LRU kiürítési és migrációs logika tájékoztatásához.
+- Összefonódás: Egy BlockIdSet nyomon követi az ezzel összefonódott más blokkok azonosítóit, megkönnyítve a relációs propagációt.
+
+Dinamikus feladatütemezés és affinitás
+
+A DynamicTaskScheduler TaskDescriptor objektumok prioritási sorát kezeli. Egyensúlyozza a számítási terhelést a magok között, miközben minimalizálja az adatmozgást az "adat-mag affinitás" tiszteletben tartásával.
+
+Feladat végrehajtási logika:
+
+1. Prioritási sor: A feladatok ArrayList-ben tárolódnak és priority és inference_priority szerint rendezve.
+2. Affinitás leképezés: A DataFlowAnalyzer nyomon követi, hogy melyik magok melyik block_id-hez férnek hozzá.
+3. Migráció: Ha a ChaosCoreKernel terhelési egyensúlyhiányt észlel (meghaladva a LOAD_HIGH_THRESHOLD-ot), rebalanceLoad()-ot indít, amely frissíti a blokkok affinity_core-ját és feladatokat mozgat az alulhasznált magokra.
+
+Terheléselosztási konstansok:
+
+- OPTIMIZATION_THRESHOLD: (0.6) Minimális nyereség a blokk migráció indításához.
+- BALANCE_INTERVAL_CYCLES: (100) A terheléselosztó végrehajtásának gyakorisága.
+
+executeGraphOnKernel interfész
+
+Az executeGraphOnKernel függvény az elsődleges belépési pont komplex NSIR (Önhasonló Relációs Gráf) műveletek futtatásához a kernelen.
+
+Végrehajtási folyamat:
+
+1. Gráf elemzés: A kernel fogad egy SelfSimilarRelationalGraph-ot.
+2. Feladat generálás: A csomópontok és élek TaskDescriptor egységekké konvertálódnak.
+3. Függőség feloldás: Az adatfüggőségek CAS block_id-kre kerülnek leképezve a data_dependencies.append() segítségével.
+4. Párhuzamos végrehajtás: A DynamicTaskScheduler feladatokat küld a RelationalGraphProcessingUnit-hoz (R-GPU) vagy helyi CPU szálakhoz a ChaosCoreConfig alapján.
+
+---
+
+4.4 CREV FOLYAMAT ÉS ZRUNTIME
+
+A CREV (Oksági Érvelés és Ellenőrzés) folyamat és a ZRuntime végrehajtási motor alkotják a JAIDE rendszer mag kognitív feldolgozási rétegét. Míg a Neurális Feldolgozó Réteg (RSF) nagy dimenziós vektor transzformációkat kezel, a CREV/ZRuntime verem diszkrét relációs kivonást, oksági validációt és kvantum-relációs változó végrehajtást kezel.
+
+1. CREV Folyamat
+
+A CREV folyamat felelős a strukturálatlan természetes nyelv strukturált relációs hármasokká való átalakításáért és oksági konzisztenciájuk ellenőrzéséért a SelfSimilarRelationalGraph-on belül.
+
+1.1 Kivonási szakaszok
+
+A folyamat az ExtractionStage enum által definiált diszkrét szakaszok sorozatán keresztül működik:
+
+| Szakasz | Leírás |
+| :--- | :--- |
+| tokenization | Kezdeti morfológiai és szó szintű szegmentálás. |
+| triplet_extraction | Minta alapú Alany-Reláció-Tárgy (SRO) struktúrák azonosítása. |
+| validation | Oksági lánc ellenőrzés és megbízhatósági pontozás. |
+| integration | Validált hármasok összevonása az NSIR gráfba. |
+| indexing | Relációs indexek frissítése a visszakereséshez. |
+
+1.2 Hármas azonosság és hashelés
+
+Az adatok integritásának és deduplikációjának biztosítása érdekében a CREV két hashelési stratégiát alkalmaz:
+
+1. Azonosság hashelés: Sha256-ot alkalmaz a subject, relation és object mezőkön egy relációs tény egyedi azonosítójának generálásához.
+2. Mező hashelés: Tartalmazza a confidence-t és extraction_time-ot a kivonás specifikus példányainak nyomon követéséhez.
+
+2. ZRuntime Végrehajtási Motor
+
+A ZRuntime a relációs logika végrehajtási környezete. Kezeli a ZVariable entitások életciklusát, amelyek szimbolikus változókat kvantum-relációs állapotokra képezik le.
+
+2.1 ZVariable életciklus
+
+Egy ZVariable egy SelfSimilarRelationalGraph-ot és egy RelationalQuantumLogic példányt foglal magában.
+
+- Hozzárendelés (assign): Szimbolikus értéket köt a változóhoz, rögzítve azt a HistoryEntry naplóban.
+- Reláció (relateTo): Élt hoz létre az aktuális változó és egy célváltozó között a gráfon belül.
+- Mérés (measure): Összeomlasztja a változó kvantum állapotát egy diszkrét értékre, a RelationalQuantumLogic motort alkalmazva.
+
+2.2 Relációs műveletek és kvantum kapuk
+
+A relációs kifejezések elemzésre kerülnek és közvetlenül kvantum kapu műveletekre képezik le. A ZRuntime számos magas szintű operátort támogat:
+
+| Relációs op | Kvantum leképezés | Implementáció |
+| :--- | :--- | :--- |
+| AND | Többvezérelt fázis | z_runtime.zig:78 |
+| OR | Szuperpozíció / Hadamard | z_runtime.zig:78 |
+| XOR | CNOT / Pauli-X | z_runtime.zig:78 |
+| ENTANGLE | Bell állapot létrehozás | z_runtime.zig:290-299 |
+
+2.3 Végrehajtási előzmények és auditálás
+
+A ZRuntime-on belül végrehajtott minden művelet rögzítésre kerül egy ExecutionHistoryEntry-ben. Ez lehetővé teszi az érvelési folyamat teljes auditálhatóságát, beleértve:
+
+- primary_target: A megcélzott változó.
+- secondary_targets: Kapcsolódó változók (pl. összefonódásban).
+- timestamp: Nanoszekundum pontosságú időzítés.
+- result_value: Mérések vagy transzformációk eredménye.
+
+3. Információ propagáció
+
+Az információ propagáció a változó határain keresztül a propagateInformation segítségével kezelt. Ez a folyamat biztosítja, hogy amikor egy ZVariable állapot megváltozik (pl. mérés vagy külső hozzárendelés révén), a hatások az NSIR gráfon keresztül az összefonódott vagy kapcsolódó csomópontokra terjednek.
+
+Propagációs folyamat:
+
+1. Kiváltó: Állapotváltozás következik be a ZVariable A-ban.
+2. Keresés: A ZRuntime azonosítja az összes élt a SelfSimilarRelationalGraph-ban, ahol A forrás.
+3. Fázis eltolás: Az EdgeQuality (pl. entangled, coherent) meghatározza a jel propagáció nagyságát.
+4. Frissítés: A célváltozó B fázis vagy amplitúdó beállítást kap a QuantumState-jében.
+5. Audit: A propagációs esemény ExecutionAction.propagate_information-ként kerül naplózásra.
+
+---
+
+4.5 JELTERJEDÉS ÉS FNDS
+
+A Jelterjedési Motor és a Fraktál Csomópont Adatrendszer (FNDS) biztosítják az NSIR gráf diszkrét idejű szimulációs és hierarchikus tárolási rétegeit. Míg a SelfSimilarRelationalGraph definiálja a topológiát, a Jelterjedési Motor szimulálja, hogyan áramlik az információ (hullámszerű állapotokként ábrázolva) az éleken keresztül, és az FNDS kezeli a csomópont-rezidens adatok tárolását és fraktál indexelését.
+
+Jelterjedési Motor
+
+A SignalPropagationEngine diszkrét idejű jelfolyamot szimulál a SelfSimilarRelationalGraph-on keresztül. A jelek SignalState objektumokként vannak modellezve, amelyek amplitúdót, fázist és frekvenciát tartalmaznak, lehetővé téve a rendszer számára az interferencia és rezonancia modellezését a relációs struktúrán belül.
+
+Jel állapot és transzformáció
+
+A jelek nem egyszerű skalárok; komplex értékű oszcillátorok.
+
+- SignalState: Nyomon követi az amplitude-ot, phase-t és frequency-t.
+- Temporális előrehaladás: Az advance függvény frissíti a jel fázisát a frekvenciája és az eltelt delta_time alapján.
+- Komplex leképezés: A jelek komplex szám reprezentációvá konvertálhatók (A * e^(i*phi)) a getComplexRepresentation segítségével.
+
+Propagációs logika
+
+Amikor egy jel átmegy egy élen, az él tulajdonságai transzformálják:
+
+1. Csillapítás: A jel amplitúdója az él súlyával csillapodik.
+2. Fázis eltolás: Az él quantum_correlation tulajdonsága fázis eltolóként működik.
+3. Qubit normalizálás: Ahogy a jelek aktiválják a csomópontokat, a csomópont belső Qubit állapota frissül és normalizálódik a normalizeNodeQubit segítségével.
+4. Aktiváció rögzítés: Minden jel érkezés naplózásra kerül egy ActivationTrace-ben, amely signal_history-t tárol a temporális elemzéshez.
+
+Fraktál Csomópont Adatrendszer (FNDS)
+
+Az FNDS kezeli a csomópontokhoz kapcsolódó adatok hierarchikus, önhasonló tárolását. FractalTree-t alkalmaz az információ szervezéséhez oly módon, hogy lehetővé teszi a dobozszámolási dimenzió becslést és mintaillesztést különböző skálákon.
+
+FractalNodeData
+
+A FractalNodeData struktúra a csomópont tartalom elsődleges tárolója.
+
+- Fraktál aláírás: SHA-256 hash, amelyet a csomópont azonosítójából, adataiból, súlyából és skálájából számítanak.
+- Metaadat: StringHashMap tetszőleges kulcs-érték párokhoz a csomóponthoz kapcsolódóan.
+- Önhasonlóság: A csomópontok nyomon követik scale-jüket és children_count-jukat a fraktál elemzés támogatásához.
+
+FractalTree és FNDSManager
+
+Az FNDSManager több FractalTree példányt koordinál.
+
+- Dobozszámolási dimenzió: A rendszer képes becsülni az adateloszlás komplexitását a boxCountingDimension segítségével.
+- Mintaillesztés: A SelfSimilarIndex mintaillesztés lehetővé teszi a rendszer számára, hogy megtalálja azokat a részfákat, amelyek megfelelnek egy specifikus strukturális vagy adat aláírásnak.
+- Hatékonyság: A manager CoalescedHashMap-et alkalmaz a sűrű tároláshoz és LRUCache-t a drága fraktál újraszámítások minimalizálásához.
+
+Főbb implementációs részletek
+
+Jel motor statisztikák
+
+A PropagationStatistics struktúra nyomon követi a jel kitörések hatékonyságát és elérését:
+
+- total_activations: Minden alkalommal, amikor egy csomópont küszöbértéke teljesült.
+- unique_nodes_activated: A jel diszperzió mértéke.
+- average_propagation_speed: A time_step és gráf távolság alapján számítva.
+
+FNDS hibakezelés
+
+Az FNDS specifikus FNDSError készletet alkalmaz a fraktál-specifikus meghibásodási módok kezeléséhez:
+
+- PatternLengthOutOfRange: SelfSimilarIndex keresések során fordul elő.
+- InvalidScale / InvalidWeight: Akkor aktiválódik, ha nem véges (NaN/Inf) értékek kerülnek átadásra a FractalNodeData.init-nek.
+- CycleDetected: Kritikus hiba, amikor egy fraktál fa struktúra megsérti az Irányított Aciklikus Gráf (DAG) követelményt.
+
+Teljesítmény segédprogramok:
+
+- Telítési aritmetika: A satAddUsize és satSubUsize függvények a statisztika követésben kerülnek alkalmazásra a hosszú futású szimulációkban való túlcsordulás megelőzéséhez.
+- Kanonikus floatok: A canonicalF64Bytes biztosítja, hogy a NaN és nulla értékek determinisztikus bájt reprezentációval rendelkezzenek a fraktál aláírásba való hashelés előtt.
+
+---
+
+4.6 MEGLEPETÉS MEMÓRIA ÉS TEMPORÁLIS GRÁF
+
+A Meglepetés Memória és Temporális Gráf alrendszerek biztosítják a JAIDE motor számára az újszerű információ azonosítását és a relációs adatok időbeli fejlődésének nyomon követését. A SurpriseMemoryManager Jaccard és Hamming metrikák alapján szűri az adatokat az újdonságuk szerint, míg a TemporalGraph nanoszekundum pontosságú pillanatképeket tart fenn az NSIR gráf állapotáról.
+
+Meglepetés Memória Manager
+
+A SurpriseMemoryManager kapuőrként működik a Tartalom-Címezhető Tárolás (CAS) számára. Értékeli a bejövő adatblokkokat annak meghatározásához, hogy elegendő "meglepetést" (újdonságot) tartalmaznak-e a relációs magba való hosszú távú rögzítés indoklásához.
+
+Újdonság metrikák és pontozás
+
+A meglepetés három elsődleges metrika kombinációján keresztül kerül kiszámításra, amelyek a SurpriseMetrics struktúrában vannak összefoglalva:
+
+1. Jaccard disszimilaritás: Méri a bigram készletek átfedését az új adatok és a meglévő minták között.
+2. Tartalom hash távolság: Kiszámítja a Hamming távolságot az új blokk SHA-256 hash-e és a meglévő blokk azonosítók között.
+3. Temporális újdonság: Értékeli, hogy mikor dolgoztak fel hasonló adatokat utoljára egy 86 400 másodperces csúszó ablak segítségével (TEMPORAL_NOVELTY_WINDOW_NS).
+
+A kombinált meglepetési pontszám ezen tényezők normalizált átlaga.
+
+Megőrzés és kiürítés
+
+A meglepetés memóriába rögzített adatok SurpriseRecord-ot kapnak. A rendszer súlyozott prioritási algoritmust alkalmaz ezek életciklusának kezeléséhez:
+
+| Konstans | Érték | Leírás |
+| :--- | :--- | :--- |
+| RETENTION_BASE_WEIGHT | 0.5 | Alapsúly minden rekordhoz. |
+| RETENTION_AGE_WEIGHT | 0.3 | Csökkentési tényező a rekord kora alapján. |
+| RETENTION_FREQUENCY_WEIGHT | 0.2 | Erősítési tényező a gyakran hozzáférhető blokkokhoz. |
+
+A recomputeRetention függvény frissíti a retention_priority-t minden alkalommal, amikor egy blokkhoz hozzáférnek vagy periodikus karbantartás során.
+
+Temporális Gráf
+
+A TemporalGraph verzionált, idősor-alapú nézetet biztosít a SelfSimilarRelationalGraph-ról (NSIR). Nanoszekundum felbontással követi nyomon a csomópontok és élek változásait.
+
+Verzionálási primitívek
+
+A rendszer két elsődleges verzionálási struktúrát definiál:
+
+- NodeVersion: Tárolja a csomópont QuantumState pillanatképét, verziószámát és egy StringHashMap-et a tulajdonságokról egy specifikus Timestamp-nél.
+- EdgeVersion: Nyomon követi a két csomópont közötti kapcsolat weight-jét és EdgeQuality-jét (pl. Coherent, Entangled, Fractal) egy adott időbélyegnél.
+
+Kvantum állapot pillanatképek
+
+A NodeVersion kifejezetten rögzíti a QuantumState-et a quantum_logic modulból. Ez lehetővé teszi a ReasoningOrchestrator számára az "időbeli visszagörgetések" végrehajtását, ahol lekérdezheti egy csomópont valószínűségét és nagyságát a tanítási előzmények bármely pontján.
+
+Főbb függvények és konstansok
+
+| Entitás | Elhelyezkedés | Cél |
+| :--- | :--- | :--- |
+| Timestamp | src/core_relational/temporal_graph.zig:14 | i64 nanoszekundum reprezentáció. |
+| NodeVersion.init | src/core_relational/temporal_graph.zig:42-55 | Új csomópont pillanatképet hoz létre QuantumState-tel. |
+| EdgeVersion.init | src/core_relational/temporal_graph.zig:155-170 | Új él pillanatképet hoz létre EdgeQuality-vel. |
+| SurpriseRecord.recomputeRetention | src/core_relational/surprise_memory.zig:88-97 | Újraszámítja a prioritást RETENTION_AGE_WEIGHT segítségével. |
+| SurpriseMetrics.init | src/core_relational/surprise_memory.zig:61-72 | Kombinálja a Jaccard, Hash és Temporális pontszámokat. |
+
+Memóriakezelés és stabilitás
+
+A SurpriseMemoryManager Mutex-et alkalmaz a meglepetés rekordokhoz és statisztikákhoz való szálbiztos hozzáférés biztosítására. Az időbeli konzisztencia fenntartásához a stableMonotonicNow függvény megakadályozza, hogy az óra eltolódása vagy a rendszeridő módosítása visszafelé mozgó időbélyegeket okozzon a memória rekordokban.
+
+---
+
+5 KVANTUM SZÁMÍTÁSTECHNIKAI INTEGRÁCIÓ
+
+A JAIDE kvantum számítástechnikai primitíveket integrál közvetlenül a kognitív architektúrájába, áthidalva a klasszikus neurális feldolgozás és a kvantum-relációs érvelés közötti szakadékot. Ez a réteg biztosítja a szükséges absztrakciókat a kvantum áramkörök fizikai hardveren (IBM Quantum) vagy szimulátorokban való végrehajtásához, miközben egy Nulla-Tudás (ZK) ellenőrzési rendszeren keresztül biztosítja az eredmények integritását.
+
+A kvantum réteget elsősorban a Mag Relációs Réteg használja a tokenek és fogalmak közötti komplex összefonódások modellezéséhez a SelfSimilarRelationalGraph-on (NSIR) belül.
+
+Rendszer áttekintés
+
+Az integráció három elsődleges tartományból áll:
+
+1. Kvantum Logika Motor: Kvantum állapotokat és kapukat szimulál és kezel a JAIDE futtatókörnyezetben.
+2. Hardver Interfész: Külső kvantum backendekkel (IBM Quantum) és helyi szimulátorokban való kommunikációt kezel.
+3. ZK Ellenőrzés: Kriptográfiai bizonyítékokat biztosít arról, hogy a kvantum-klasszikus hibrid következtetések helyesen kerültek végrehajtásra az érzékeny modell paraméterek felfedése nélkül.
+
+Kvantum Logika és Hardver Interfész
+
+A JAIDE átfogó kvantum logikai kapu készletet valósít meg, amely túlmutat a szabványos qubiteken és relációs műveleteket is tartalmaz. A LogicGate enum mind a szabványos kapukat (Hadamard, CNOT, Toffoli), mind a JAIDE-specifikus relációs primitíveket definiálja, mint a RELATIONAL_AND és a FRACTAL_TRANSFORM.
+
+A QuantumState struktúra kezeli a komplex amplitúdókat és fázis információkat ezekhez a műveletekhez, segédprogramokat biztosítva a normalizáláshoz és a valószínűség számításhoz. A fizikai végrehajtáshoz az IBMQuantumClient kezeli a QuantumCircuit életciklusát, az OpenQASM 3.0 szerializálástól az IBM hardver családokon (HERON, EAGLE vagy FALCON) való benyújtásig.
+
+Főbb komponensek:
+
+- RelationalQuantumLogic: Kapu alkalmazásokat orchestrál az NSIR gráfon.
+- IBMQuantumClient: Kezeli a backend kalibrációs adatokat (T1/T2 idők) és a feladat sorba állítást.
+- Hibrid Optimalizáló: Paraméter-eltolás gradienseket alkalmaz a kvantum-klasszikus paraméterek hangolásához.
+
+Nulla-Tudás Ellenőrzési Rendszer
+
+A hibrid kvantum-neurális következtetések biztonságának és helyességének biztosítása érdekében a JAIDE Nulla-Tudás (ZK) ellenőrzési réteget alkalmaz. Ez a rendszer, amelynek középpontjában a ZKInferenceProver és a VerifiedInferenceEngine áll, Groth16 bizonyítékokat generál a bn128 görbe segítségével.
+
+A rendszer circom eszközláncot alkalmaz egy inference_trace.circom áramkör fordításához, amely validálja a következtetési folyamat Poseidon-láncát. Ez lehetővé teszi a JAIDE számára, hogy bizonyítsa, hogy egy specifikus kimenetet egy specifikus modell és bemenet generált, anélkül, hogy felfedné az alapul szolgáló Tensor súlyokat vagy az NSIR gráf topológiát.
+
+Főbb jellemzők:
+
+- Differenciális Adatvédelem: Laplace/Gauss zaj injektálása az adathalmaz adatvédelmének védelméhez.
+- Rögzített Pontos Skálázás: Az InferenceWitness kezeli a JAIDE Fixed32_32 aritmetikája és a ZK-barát prímtestek közötti konverziót.
+- Biztonságos Aggregáció: Merkle-fa alapú bizonyíték aggregációt tesz lehetővé a nagy áteresztőképességű köteg ellenőrzéshez.
+
+Integrációs logika
+
+A ZRuntime végrehajtási motorként szolgál, amely összeköti ezeket a komponenseket. ExecutionAction parancsokat dolgoz fel, mint a quantum_circuit vagy az entangle_variables, és azokat a helyi RelationalQuantumLogic szimulátorhoz vagy az IBMQuantumClient-hez irányítja. Az eredmények ezután a VerifiedInferenceEngine-en keresztül kerülnek feldolgozásra a végső, kriptográfiailag biztosított válasz generálásához.
+
+| Jellemző | Kód entitás | Fájl |
+| :--- | :--- | :--- |
+| Relációs kapuk | LogicGate.RELATIONAL_XOR | src/core_relational/quantum_logic.zig |
+| Állapotkezelés | QuantumState | src/core_relational/quantum_logic.zig |
+| Végrehajtási motor | ZRuntime | README.md |
+| Hardver híd | IBMQuantumClient | README.md |
+| ZK Bizonyítás | ZKInferenceProver | README.md |
+
+---
+
+5.1 KVANTUM LOGIKA ÉS IBM HARDVER INTERFÉSZ
+
+A Kvantum Logika és IBM Hardver Interfész hidat biztosít a JAIDE rendszer relációs kognitív struktúrái és a fizikai kvantum számítás között. Magában foglalja a RelationalQuantumLogic motort a helyi szimulációhoz és az IBMQuantumClient-et a valós hardveren való végrehajtáshoz.
+
+RelationalQuantumLogic Motor
+
+A RelationalQuantumLogic motor felelős a relációs műveletek kvantum kapukra való leképezéséért és a kvantum állapotok életciklusának kezeléséért. Szabványos kvantum primitívek és speciális relációs kapuk készletét biztosítja.
+
+Kapu műveletek
+
+A rendszer átfogó logikai kapu készletet definiál a LogicGate enumban. Ezek tartalmazzák:
+
+- Szabványos kapuk: HADAMARD, PAULI_X/Y/Z, PHASE, CNOT, TOFFOLI.
+- Relációs kapuk: RELATIONAL_AND, RELATIONAL_OR, RELATIONAL_NOT, RELATIONAL_XOR.
+- Speciális kapuk: FRACTAL_TRANSFORM az önhasonló állapot keveréshez.
+
+A motor a kapukat qubit követelményeik szerint osztályozza és támogatja az egykubites műveleteket a többkubites összefonódó műveletekkel szemben.
+
+Kvantum állapot reprezentáció
+
+A kvantum állapotokat a QuantumState struktúra képviseli, amely nyomon követi:
+
+- Amplitúdók: Komplex számok 2 elemű tömbje, amely az állapot vektort képviseli.
+- Fázis: A qubit globális fázisa.
+- Összefonódási fok: Skaláris érték, amely a más csomópontokkal való korrelációs erősséget képviseli.
+
+IBM Quantum Hardver Interfész
+
+Az IBMQuantumClient kezeli az IBM Quantum Platformmal való kommunikációt REST API-n keresztül.
+
+Backend családok és kalibráció
+
+A rendszer több IBM hardver családot támogat, előre definiált specifikációkkal és hibaprofillal az IBMBackendSpecs-ben:
+
+- HERON: 133 qubit, T1 kb. 350 mikroszekundum.
+- EAGLE: 127 qubit, T1 kb. 200 mikroszekundum.
+- FALCON: 27 qubit, T1 kb. 100 mikroszekundum.
+
+Az IBMBackendCalibrationData struktúra valós idejű telemetriát tárol, beleértve a T1/T2 időket, leolvasási hibákat és kapu hibákat a kiválasztott backend minden qubitjéhez.
+
+Feladat benyújtás és OpenQASM
+
+A kliens kezeli a kvantum feladat teljes életciklusát:
+
+1. Szerializáció: Az áramkörök OpenQASM 3.0 karakterláncokká konvertálódnak.
+2. Benyújtás: A submitJobWithBackend POST kérést hajt végre az IBM Cloud API-hoz.
+3. Lekérdezés: Az eredmények a getJobResult segítségével kerülnek visszanyerésre a visszaadott feladat azonosító alapján.
+
+Szimuláció és hibrid optimalizálás
+
+Állapotvektor szimulátor zajmodellezéssel
+
+Ha a use_real_backend hamis, a QuantumTaskAdapter a local_simulator-t alkalmazza. Ez a szimulátor megvalósítja:
+
+- Zajmodellezés: Az IBMDocumentedBackendSpecs kalibrációs adatait alkalmazza a dekoherencia (T1/T2) és kapu hűtlenségek szimulálásához.
+- Korlátok: A szimuláció 32 qubitre van korlátozva (SIMULATOR_QUBITS).
+
+Kvantum-Klasszikus Hibrid Optimalizáló
+
+A rendszer hibrid algoritmusokat (VQE, QAOA) támogat egy QuantumClassicalHybridOptimizer-en keresztül.
+
+- Paraméter-eltolás gradiensek: Gradienseket számít a kvantum áramkör paraméterek eltolásával (pl. rotációs szögek) az objektív függvény optimalizálásához klasszikus hardveren.
+- Konfiguráció: Az alapértelmezések 0.1-es tanulási rátát és 10^-6 toleranciát tartalmaznak.
+
+Főbb konstansok összefoglalója
+
+| Paraméter | Érték | Leírás |
+| :--- | :--- | :--- |
+| HERON_QUBITS | 133 | Max qubitek Heron osztályú hardverhez |
+| SIMULATOR_QUBITS | 32 | Max qubitek helyi állapotvektor szimulációhoz |
+| HARDWARE_MAX_SHOTS | 100 000 | Maximális mintavételi lövések áramkörenként |
+| POLL_INTERVAL_MS | 100 | Lekérdezési frekvencia a feladat eredményekhez |
+
+---
+
+5.2 NULLA-TUDÁS ELLENŐRZÉSI RENDSZER
+
+A JAIDE Nulla-Tudás (ZK) Ellenőrzési Rendszere mechanizmust biztosít az ellenőrizhető következtetéshez, biztosítva, hogy a neurális hálózati számítások és a relációs gráf átmenetek helyesen kerültek végrehajtásra anélkül, hogy felfednék az alapul szolgáló modell súlyokat vagy az érzékeny bemeneti adatokat. A Groth16 bizonyítási rendszert alkalmazza a bn128 elliptikus görbe felett, egyedi Circom-alapú eszközláncot alkalmazva az áramkör generáláshoz és snarkjs-t a bizonyíték orchestráláshoz.
+
+Rendszer architektúra
+
+A ZK rendszer egy magas szintű Zig interfészre (ZKInferenceProver) és egy alacsony szintű R1CS áramkör definícióra (inference_trace.circom) van osztva. Az architektúra "kötelezd el-majd-bizonyítsd" mintát követ, ahol a bemenetek és kimenetek Blake3 vagy Poseidon hash-ekkel kerülnek elkötelezésre, és a bizonyíték validálja az ezen elkötelezések közötti átmenetet.
+
+CircomProver és eszközlánc integráció
+
+A CircomProver osztály hídként működik a Zig futtatókörnyezet és a snarkjs/circom eszközlánc között. Kezeli az áramkör fordítást, a megbízható beállítást (Groth16) és a tanú generálást.
+
+Főbb függvények:
+
+- compileCircuit(): circom folyamatot indít az R1CS és WASM artifaktumok generálásához.
+- generateWitness(): A lefordított WASM-t és node-ot alkalmazza a tanú kiszámításához a bemeneti jelekből.
+- prove(): Végrehajtja az snarkjs groth16 prove-t egy ZKProofBundle létrehozásához, amely tartalmazza a Groth16Proof-ot és a PublicSignals-t.
+
+Adatstruktúrák
+
+| Struktúra | Cél |
+| :--- | :--- |
+| ZKCircuitConfig | Definiálja a .wasm, .zkey útvonalakat és a pontossági paramétereket (alapértelmezett 64 bites). |
+| Groth16Proof | Magában foglalja a G1 és G2 pontokat (pi_a, pi_b, pi_c) a bn128-hoz. |
+| PublicSignals | i256 értékek gyűjteménye, amelyek az áramkör nyilvános bemeneteit/kimeneteit képviselik. |
+
+Következtetési nyom áramkör (inference_trace.circom)
+
+A ZK rendszer mag logikája az inference_trace.circom-ban található. Rögzített pontos aritmetikát és specifikus neurális rétegeket valósít meg ZK-barát módon.
+
+Poseidon láncolás
+
+Mivel a szabványos hash-ek, mint az SHA-256, drágák az R1CS-ben, a JAIDE PoseidonChain(n)-t alkalmaz az állapot elkötelezésekhez. A bemeneteket 6-os darabokban dolgozza fel, Poseidon hash függvényeken láncolva azokat egyetlen mezőelem kimenet előállításához.
+
+RSF réteg ellenőrzés
+
+Az RSFLayerComputation(dim) sablon tükrözi az RSFLayer-t a neurális veremben. Validálja:
+
+1. Osztás: Az x bemeneti vektor x1-re és x2-re osztódik.
+2. Affin csatolás: y2 = x2 ⊙ exp(S(x1)) + T(x1).
+3. Rögzített pontos skálázás: Mivel a Circom véges testekben dolgozik, a floatok FIXED_POINT_SCALE (10^6) segítségével skálázódnak.
+4. Taylor közelítés: Az exp függvény köbös Taylor sorral közelítendő: 1 + x + 0.5x^2 + 0.166667x^3.
+
+Tartomány és tagság bizonyítékok
+
+- RangeProof(bits): Biztosítja, hogy egy érték [min, max] tartományban legyen Num2Bits dekompozíció és Pedersen elkötelezések segítségével minden bithez.
+- VerifyMerkleProof(depth): Szabványos Merkle fa útvonal validálást valósít meg Poseidon(2) hashelők és Mux1 segítségével az útvonal index váltáshoz.
+
+Adatvédelem és ellenőrzési logika
+
+A rendszer Differenciális Adatvédelmet és Biztonságos Aggregációt tartalmaz az egyéni adatpontok védelmére az ellenőrzési folyamat során.
+
+Differenciális adatvédelem
+
+A ZKInferenceProver zajt alkalmaz a következtetési nyomra az (ε, δ)-differenciális adatvédelem teljesítéséhez.
+
+- Laplace zaj: SecureRng segítségével generálva és a nyilvános jelekbe injektálva a pontos értékek elhomályosításához.
+- Gauss zaj: Magasabb dimenziós aggregációkhoz alkalmazva.
+
+Biztonságos aggregáció
+
+Az elosztott következtetéshez a rendszer támogatja a bizonyítékok aggregálását több résztvevőtől.
+
+- SecureAggregation: Biztosítja, hogy az aggregált eredmény helyes legyen az egyéni hozzájárulások felfedése nélkül.
+- Blake3 elkötelezés: Nagy sebességű bemenet/kimenet integritás ellenőrzéshez alkalmazva a drágább ZK bizonyíték generálása előtt.
+
+Hibakezelés
+
+A ZKProofError enum definiálja az ellenőrzési folyamat meghibásodási módjait, beleértve a CircomCompilationFailed, WitnessGenerationFailed és SnarkjsNotFound hibákat. Ezek a hibák a VerifiedInferenceEngine-en keresztül propagálódnak annak biztosítására, hogy az ellenőrizetlen eredmények soha ne kerüljenek érvényesként kezelésre magas integritású módokban.
+
+---
+
+6 KÖVETKEZTETÉSI SZERVER ÉS VISSZAKERESÉS
+
+A Következtetési Szerver és Visszakeresési réteg az elsődleges interfészként szolgál a külső fogyasztók számára a JAIDE rendszerrel való interakcióhoz. Orchestrálja az átmenetet a nyers szöveges bemenetektől a nagy dimenziós neurális reprezentációkig, a relációs gráf érvelésig és végül a token generálásig. Ez a réteg kezeli a HTTP kapcsolatok életciklusát, érvényesíti a biztonsági és sebességkorlátozásokat, és speciális indexelési struktúrákat (SSI) és rangsorolási algoritmusokat alkalmaz a kontextus és koherencia fenntartásához a következtetés során.
+
+Kiszolgálási architektúra áttekintés
+
+Az InferenceServer egy többszálú HTTP motor, amelyet nagy áteresztőképességű token generálásra terveztek. ThreadPool-t alkalmaz az egyidejű kapcsolatok kezeléséhez, inference_mutex-szel védve a szálbiztos hozzáférés biztosítása érdekében az alapul szolgáló modell súlyokhoz és állapothoz.
+
+A szerver szabványos RESTful végpontokat valósít meg, beleértve a /v1/health-et a monitorozáshoz és a /v1/inference-t az egyszeri kérés feldolgozáshoz. Nagy sűrűségű munkaterhelésekhez a /v1/batch_inference végpont lehetővé teszi több prompt párhuzamos feldolgozását.
+
+A következtetési folyamat
+
+Amikor egy kérés érkezik, a szerver komplex folyamatot hajt végre, amely áthidalja a diszkrét tokenek és a Mag Relációs Réteg közötti szakadékot.
+
+| Fázis | Komponens | Művelet |
+| :--- | :--- | :--- |
+| Belépés | RateLimiter | IP/API kulcs validálása max_requests_per_minute ellen. |
+| Tokenizálás | MGT | Nyers szöveg szódarab egységekké konvertálása. |
+| Neurális folyam | RSFLayer | Beágyazások átadása Visszafordítható Szórt Folyam rétegeken. |
+| Érvelés | ReasoningOrchestrator | Hierarchikus érvelés indítása (helyi/globális/meta). |
+| Visszakeresés | SSI és Ranker | Szegmentált Szekvencia Index lekérdezése releváns kontextushoz. |
+| Generálás | FractalLPU | Token generálási ciklus végrehajtása hardver gyorsítókon. |
+
+Visszakeresés és kontextus rangsorolás
+
+A JAIDE Szegmentált Szekvencia Indexet (SSI) alkalmaz a neurális állapotok és relációs hármasok kereshető előzményének fenntartásához. Az SSI hierarchikus hash faként van strukturálva, lehetővé téve a retrieveTopK hasonlósági kereséseket, amelyek tájékoztatják a Ranker-t. A Ranker n-gram csökkentési súlyozást és Jaccard hasonlóságot alkalmaz a potenciális következő tokenek pontozásához, biztosítva, hogy a generált kimenet a megadott kontextusban és a modell belső memóriájában maradjon.
+
+Adatfolyam: Szövegtől a relációs állapotig
+
+Az InferenceServer a CPU-kötött API logika és a GPU/LPU-kötött neurális számítások koordinátoraként működik. A VerifiedInferenceEngine-t alkalmazza annak biztosítására, hogy a felhasználónak visszaadott eredmények kriptográfiailag konzisztensek legyenek a modell állapotával.
+
+---
+
+6.1 HTTP KÖVETKEZTETÉSI SZERVER
+
+Az InferenceServer a JAIDE kiszolgálási rétegének elsődleges belépési pontja, nagy teljesítményű HTTP interfészt biztosítva mind az egyszeri, mind a köteg következtetéshez. Orchestrálja a komplex átmenetet a természetes nyelvi bemenetektől az RSF neurális vermen és a mag relációs érvelési motoron keresztül.
+
+Szerver architektúra
+
+Az InferenceServer dedikált ThreadPool-ra épülő többszálú, aszinkron architektúrán alapul a kapcsolat életciklusok kezeléséhez a fő eseményhurok blokkolása nélkül.
+
+Főbb komponensek:
+
+- RateLimiter: Csúszóablak algoritmust valósít meg az IP-cím szerinti kérések nyomon követéséhez.
+- Következtetési Mutex: Egy globális Thread.Mutex biztosítja a szálbiztos hozzáférést az alapul szolgáló modell súlyokhoz és a SelfSimilarRelationalGraph-hoz az előre irányuló menet során.
+- Kapcsolat életciklus: Minden bejövő kapcsolatot a fő szál fogad és a poolhoz irányít, ahol API kulcsokra kerül validálásra (ha a require_api_key engedélyezve van).
+
+API végpontok
+
+A szerver három elsődleges REST végpontot tesz elérhetővé:
+
+| Végpont | Módszer | Leírás |
+| :--- | :--- | :--- |
+| /v1/health | GET | Visszaadja a szerver állapotát, üzemidejét és modell betöltési állapotát. |
+| /v1/inference | POST | Szabványos egyszeri kérés következtetés. InferenceRequest JSON-t vár. |
+| /v1/batch_inference | POST | Több prompt párhuzamos feldolgozása ServerConfig.batch_size-ig. |
+
+A következtetési folyamat
+
+A szerver magja a runInferenceInternal függvény, amely végrehajtja a teljes transzformációt a tokenektől a relációs érvelésig és vissza a generált szövegig.
+
+Adatfolyam szakaszok:
+
+1. Tokenizálás: Az MGT (Multi-Gram Tokenizáló) a bemeneti szöveget token azonosítók sorozatává konvertálja.
+2. Beágyazás: A tokenek nagy dimenziós térbe kerülnek vetítve a LearnedEmbedding segítségével.
+3. RSF előre irányuló menet: Az RSFLayer verem visszafordítható affin csatolást és OFTB keverést hajt végre.
+4. NSIR kódolás: A neurális állapot kódolódik a SelfSimilarRelationalGraph-ba (NSIR).
+5. Érvelés orchestrálás: A ReasoningOrchestrator futtatja a háromfázisú érvelési ciklust (helyi, globális, meta).
+6. Hardver gyorsítás: A munkaterhelések a FractalLPU-hoz és a RelationalGraphProcessingUnit-hoz (R-GPU) kerülnek irányítva gráf feldolgozáshoz.
+7. Meglepetés memória: Az újszerű minták a SurpriseMemoryManager-be kerülnek rögzítésre hosszú távú megőrzésre.
+8. Token generálás: A végső állapot visszadekódolódik az RSF inverz útvonalon a következő token mintavételezéséhez.
+
+Ellenőrzött következtetés integráció
+
+A szerver "Ellenőrzött" módot támogat a VerifiedInferenceEngine-en keresztül. Ha engedélyezve van, a szerver Nulla-Tudás (ZK) bizonyítékot generál a következtetés végrehajtásáról.
+
+- Elkötelezés: A bemeneti tokenek és modell súlyok Blake3 segítségével kerülnek hash-elve egy elkötelezés létrehozásához.
+- Nyom rögzítés: A ReasoningOrchestrator minden művelete rögzítésre kerül egy InferenceWitness-be.
+- Bizonyíték generálás: A kérés befejezésekor a VerifiedInferenceEngine a CircomProver-t alkalmazza egy Groth16 bizonyíték generálásához, amely igazolja, hogy a kimenet helyesen lett levezetva az elkötelezett bemenetből és modellből.
+
+Szerver konfiguráció és inicializálás
+
+A szerver a ServerConfig struktúrán keresztül kerül konfigurálásra. Az inference_server_main.zig fő belépési pontján keresztül inicializálható és indítható.
+
+Konfigurációs paraméterek:
+
+- batch_size: Meghatározza az egyidejűleg feldolgozható szekvenciák maximális számát az RSF veremben.
+- esso_initial_temp: Szabályozza az EntangledStochasticSymmetryOptimizer kezdeti hőmérsékletét az érvelési fázis során.
+- require_api_key: Logikai jelző a hitelesítés érvényesítéséhez.
+
+Fő végrehajtás
+
+A main függvény kezeli a parancssori argumentum elemzést, a környezeti változó felülírásokat (pl. JAIDE_MODEL_PATH) és a kecses leállítást.
+
+---
+
+6.2 SSI INDEX ÉS RANKER
+
+A Szegmentált Szekvencia Index (SSI) és a Ranker alrendszerek biztosítják a JAIDE következtetési folyamat alapvető visszakeresési és pontozási infrastruktúráját. Az SSI hierarchikus hash fát valósít meg a token szegmensek hatékony tárolásához és integritás-ellenőrzött visszakereséséhez, míg a Ranker többtényezős pontozást biztosít n-gram csökkentéssel, MinHash-alapú Jaccard hasonlósággal és diverzitási metrikákkal.
+
+SSI: Szegmentált Szekvencia Index
+
+Az SSI egy hierarchikus hash fa struktúra, amelyet token hash-ek alapján Segment adatok tárolására és visszakeresésére terveztek. Tartalom-címezhető indexként működik Merkle-stílusú integritás ellenőrzésekkel és automatikus egyensúlyozással.
+
+Adatstruktúrák és hierarchia
+
+Az index Node objektumok fájává van szervezve, ahol minden csomópont lehet ág (gyermekeket tartalmaz) vagy levél (szegmenseket és ütközési láncokat tartalmaz).
+
+- Segment: Token sorozatot képvisel kapcsolódó metaadatokkal, beleértve egy globális position-t, score-t és anchor_hash-t.
+- Node: Tartalmaz egy hash-t, amely a részfájának állapotát képviseli, children listát (ágakhoz) és segment-et vagy collision_chain-t (levelekhez).
+- CollisionNode: Láncolt lista struktúra a levél csomópontokon belüli hash ütközések kezeléséhez.
+
+SSI implementációs logika
+
+Az SSI 6-os bucket_width-et alkalmaz, ami 64 gyermeket eredményez ág csomópontonként. A hash integritást a refreshHash tartja fenn, amely egy csomópont hash-ét a gyermekei (ágakhoz) vagy szegmensei (levelekhez) alapján számítja.
+
+| Jellemző | Implementációs részlet |
+| :--- | :--- |
+| Hash algoritmus | Egyedi mixHash 0x9E3779B185EBCA87 konstanssal |
+| Integritás | Merkle-stílusú rekurzív hashelés computeBranchHash-en keresztül |
+| Ütközés kezelés | Láncolt lista collision_chain levél csomópontokban |
+| Keresés | retrieveTopK hasonlósági keresés szegmens pontszámok alapján |
+
+Ranker: Szekvencia pontozás és visszakeresés
+
+A Ranker felelős a token szekvenciák relevanciájának és minőségének értékeléséért. N-gram súlyok, Lokalitás-Érzékeny Hashelés (LSH) és diverzitási pontozás kombinációját alkalmazza normalizált pontszám előállításához.
+
+Pontozási komponensek
+
+A Ranker több súlyozott tényezőn keresztül számítja a pontszámokat a RankerConfig-ban definiálva:
+
+1. N-gram csökkentés: Súlyok kerülnek hozzárendelésre az n-gramokhoz 1/N csökkentési mintával, a hosszabb egyezéseket részesítve előnyben.
+2. Diverzitási pontozás: A computeTokenDiversity kiszámítja az egyedi tokenek és az összes token arányát az ismétlődő szekvenciák büntetéséhez.
+3. Horgony közelség: Méri, hogy a tokenek mennyire közel vannak az SSI-n belüli ismert horgony hash-ekhez.
+4. Jaccard hasonlóság: MinHash aláírásokat alkalmaz a szekvencia és egy lekérdezés közötti hasonlóság becslésére.
+
+Ranker logika folyam
+
+A pontozás elsődleges belépési pontja a scoreSequence, amely összesíti a tényezőket nyers pontszámmá és 0.0 és 1.0 közé szorítja. A lekérdezés alapú visszakereséshez a scoreSequenceWithQuery kombinálja az alap szekvencia pontszámot az átfedési és Jaccard metrikákkal.
+
+Tenzor integráció és perzisztencia
+
+Az SSI index támogatja a struktúrájának exportálását és importálását a JAIDE Tensor formátumba a perzisztencia és GPU-gyorsított feldolgozás érdekében.
+
+- Export: Az exportToTensor szerializálja a fát egy 2D tenzorrá [méret, 134] alakban, ahol 134 a tensor_width. Ez a szélesség befogadja a Segment metaadatokat és token hash-eket.
+- Import: Az importFromTensor rekonstruálja a hierarchikus Node struktúrát egy szerializált tenzorból, validálva az anchor_hash-t és rekonstruálva a collision_chain-t minden levélhez.
+
+Tenzor export séma
+
+| Eltolás | Mező | Leírás |
+| :--- | :--- | :--- |
+| 0 | Pozíció | Globális szekvencia pozíció (u64 két f32-re osztva) |
+| 2 | Pontszám | Lebegőpontos szegmens pontszám |
+| 3 | Horgony hash | Hash a közelség nyomon követéséhez (u64 osztva) |
+| 5-133 | Tokenek | Token azonosító tárolás (legfeljebb 128 token) |
+
+Fejlett visszakeresési jellemzők
+
+Top-K visszakeresés
+
+A Ranker topKHeap visszakeresést valósít meg, amely prioritási sort tart fenn a legmagasabb pontszámú szegmensekből egy streaming rangsorolási művelet során. Ez lehetővé teszi a rendszer számára a nagy léptékű index bejárások kezelését kimerítő rendezés nélkül.
+
+Párhuzamos pontozás
+
+A Ranker párhuzamos végrehajtásra van tervezve. A pontozási menetek szálak között oszthatók el, a súly kalibrálás periodikusan történik az ngram_weights beállításához a ReasoningOrchestrator visszajelzése alapján.
+
+Streaming rangsorolás
+
+Valós idejű következtetéshez a Ranker streaming rangsorolási módot támogat. STREAMING_WINDOW_SIZE-t (512 token) alkalmaz a pontszámok inkrementális kiszámításához, ahogy a tokenek generálódnak az RSF neurális verem által.
+
+---
+
+7 HARDVER GYORSÍTÁS
+
+A JAIDE heterogén hardver gyorsítási vermet alkalmaz az 5. gyök architektúra számítási igényeinek kezeléséhez. A rendszer optimalizált GPU kerneleken, egyedi logikai egységeken és RTL szintű hardver leírásokon keresztül hidalja át a magas szintű neurális műveleteket és a relációs gráf feldolgozást.
+
+A verem három elsődleges szintre van osztva:
+
+1. GPU gyorsítás (Futhark/CUDA): Nagy áteresztőképességű neurális műveletek az RSF (Visszafordítható Szórt Folyam) rétegekhez.
+2. Relációs feldolgozás (FractalLPU/R-GPU): Speciális architektúrák a gráf alapú megismeréshez és Network-on-Chip (NoC) szimulációhoz.
+3. RTL logika (Clash/Haskell): Alacsony szintű hardver modulok a memória arbitrációhoz és a nagy sebességű visszakereséshez.
+
+---
+
+7.1 FUTHARK GYORSÍTÓ ÉS CUDA INTERFÉSZ
+
+A JAIDE hardver gyorsítási rétege nagy teljesítményű interfészt biztosít a neurális műveletekhez Futhark által generált GPU kernelek és nyers CUDA kötések segítségével. Ez a rendszer kezeli a GPU kontextusok életciklusát, típusbiztos burkolókat biztosít a többdimenziós eszköz tömbökhoz, és megvalósítja a Visszafordítható Szórt Folyam (RSF) modellek tanítási folyamatát.
+
+RSFAccelerator és kontextus életciklus
+
+A FutharkContext struktúra az elsődleges kezelő a GPU erőforrásokhoz, burkolva a Futhark által generált C API-t. Kezeli a futhark_context-et és a hozzá tartozó konfigurációt.
+
+Kontextus inicializálás
+
+Inicializáláskor a gyorsító konfigurálja a GPU eszközt és beállítja az alapértelmezett végrehajtási paramétereket:
+
+- Csoport méret: 256 szál blokkonként.
+- Csoportok száma: 128 blokk.
+- Csempe méret: 32x32 mátrix műveletekhez.
+
+A sync() függvény biztosítja, hogy az összes aszinkron GPU kernel befejeződjön, mielőtt a gazdagép folytatja, ami kritikus az adatok integritásának fenntartásához a tanítási lépések során.
+
+FutharkArray típus burkolók
+
+A JAIDE speciális burkolókat alkalmaz az eszközön tárolt tömbökhoz a típusbiztonság és a helyes dimenzionalitás biztosítása érdekében a Futhark bejegyzések hívásakor. Ezek a burkolók 1D, 2D és 3D elrendezéseket támogatnak f16, f32 és i64 típusokhoz.
+
+| Típus burkoló | Alapul szolgáló Futhark típus | Dimenziók | Felhasználás |
+| :--- | :--- | :--- | :--- |
+| FutharkArray1DF16 | struct_futhark_f16_1d | [len] | Eltolások, 1D vektorok |
+| FutharkArray2DF16 | struct_futhark_f16_2d | [sorok][oszlopok] | Súlyok, bemeneti kötegek |
+| FutharkArray3DF16 | struct_futhark_f16_3d | [b][s][d] | Kötegelt szekvencia adatok |
+| FutharkArray1DI64 | struct_futhark_i64_1d | [len] | Permutációs indexek |
+
+Rögzített memória a gyors átvitelekhez
+
+A gazdagép-eszköz (H2D) és eszköz-gazdagép (D2H) sávszélesség optimalizálásához a PinnedMemory struktúra cudaHostAlloc-ot alkalmaz. Ez oldalzárolt memóriát allokál, amely lehetővé teszi a GPU számára a Közvetlen Memória Hozzáférés (DMA) alkalmazását cudaMemcpy-n keresztül, megkerülve a szabványos CPU memória előkészítési területet.
+
+TrainingStep folyamat
+
+A tanítási folyamat Futhark belépési pontok sorozataként van megvalósítva, amelyek kezelik az előre irányuló menetet, a veszteség számítást és a visszafordítható visszafelé irányuló menetet.
+
+1. Köteg előre irányuló menet
+
+A batch_forward belépési pont 3D bemeneti tenzort dolgoz fel. Minden mintához végrehajtja az rsf_forward-ot, amely a bemenetet két félre osztja (x1, x2) és affin csatolást alkalmaz:
+
+- Skála: y1 = x1 ⊙ exp(clamp(Ws x2 + bs))
+- Fordítás: y2 = x2 + (Wt y1 + bt)
+
+2. Veszteség és visszafelé irányuló menet
+
+A batch_compute_loss függvény Átlagos Négyzetes Hibát (MSE) számít f32 pontossággal a stabilitáshoz. Az rsf_backward belépési pont végrehajtja a gradiens számítást. Mivel az RSF réteg visszafordítható, a visszafelé irányuló menet rekonstruálhatja a gradienseket a közbenső aktivációk tárolása nélkül, jelentősen csökkentve a memória terhelést.
+
+3. SFD súly frissítés
+
+A súlyok a Spektrális Fisher Diagonalizáló (SFD) logika segítségével frissülnek. Az sfd_update_half és sfd_update_bias függvények impulzus alapú frissítéseket valósítanak meg. A WeightKind enum azonosítja, hogy melyik paraméter készlet kerül frissítésre (Skála súlyok, Fordítás súlyok vagy a megfelelő eltolások és sebességek).
+
+GPU műveletek és CUDA kötések
+
+Mátrix műveletek
+
+A Futhark kernel matmul_tiled biztosítja az RSF transzformációk alapját. Csempézett megközelítést alkalmaz, ahol az A mátrix sorai és a B mátrix oszlopai redukálódnak a kimenet előállításához. Kötegelt szekvenciákhoz a batched_matmul leképezi ezt a műveletet a köteg dimenzión.
+
+EmbeddingAccelerator
+
+Az EmbeddingAccelerator (az AccelInterface-ben hivatkozott) kezeli a keresési és gradiens szórt összeadási műveleteket a tanult beágyazásokhoz a GPU-n. Ez integrálódik a trainingStep-be az end-to-end gyorsítás lehetővé tételéhez a token azonosítóktól a frissített súlyokig.
+
+Nyers CUDA interfész
+
+A Futhark által nem lefedett műveletekhez (mint a specifikus memóriakezelés vagy alacsony szintű szinkronizálás) a JAIDE közvetlen C-ABI kötéseket biztosít a CUDA futtatókörnyezethez:
+
+- cudaMalloc / cudaFree: Eszköz memória allokáció.
+- cudaMemcpy: Szinkron adatátvitel.
+- cudaStreamSynchronize: Finomabb vezérlés a végrehajtási sorok felett.
+
+---
+
+7.2 FRACTALLPU ÉS R-GPU
+
+A JAIDE hardver gyorsítási rétege speciális feldolgozó egységeket biztosít a Mag Relációs Réteghez, amelyeket kifejezetten az Önhasonló Relációs Gráf (SSRG) nem-euklideszi, önhasonló természetének kezelésére terveztek. A FractalLPU (Fraktál Lineáris Feldolgozó Egység) hierarchikus munkaterhelés egyensúlyozást és memória csempézést kezel a gráf topológia alapján, míg az R-GPU (Relációs Gráf Feldolgozó Egység) egy Network-on-Chip (NoC) architektúra aszinkron szimulációját biztosítja, amelyet a gráf izomorfizmusra és a relációs adatfolyamra optimalizáltak.
+
+FractalLPU: Fraktál Lineáris Feldolgozó Egység
+
+A FractalLPU egy csempe alapú gyorsítási architektúra, amely a gráf csomópontokat fizikai számítási egységekre képezi le fraktál dimenziók alapján. FractalTile objektumok hierarchikus struktúráját alkalmazza a memória és számítási erőforrások kezeléséhez.
+
+Munkaterhelés egyensúlyozás és csempézés
+
+A rendszer FractalDimensionConfig-ot alkalmaz a gráf felosztásának meghatározásához. Főbb paraméterek a hausdorff_dim és a box_counting_levels, amelyek meghatározzák a memória csempék rekurzív felosztását.
+
+- FractalTile: Az LPU alapvető egysége. Minden csempe ComputeUnit objektumok készletét tartalmazza és négy gyermekre osztható.
+- Terheléselosztás: A balanceLoad függvény biztosítja, hogy egyetlen ComputeUnit se legyen túlterhelve a pending_ops korlátozásával a load_balance_factor alapján.
+- Rögzített pontos végrehajtás: Az LPU skálázott egész aritmetikát hajt végre az executeFixedPoint segítségével, coherence tényezőt alkalmazva a bemeneti jelekre a jel csillapítás szimulálásához a fraktál hierarchián keresztül.
+
+FractalLPU leképezési logika
+
+| Komponens | Felelősség | Kód hivatkozás |
+| :--- | :--- | :--- |
+| mapSSRGNode | Egy hash-elt SSRG csomópontot egy csempén belüli specifikus ComputeUnit-ra képez le. | src/hw/accel/fractal_lpu.zig:107-113 |
+| subdivide | Rekurzívan hoz létre gyermek csempéket, amíg el nem éri a min_tile_size-t vagy a box_counting_levels-t. | src/hw/accel/fractal_lpu.zig:90-105 |
+| buildHierarchy | Elindítja a root_tile rekurzív felosztását. | src/hw/accel/fractal_lpu.zig:193-195 |
+
+Relációs Gráf Feldolgozó Egység (R-GPU)
+
+Az R-GPU egy szimulált sokmagos architektúra, amelyet aszinkron üzenetküldésre és relációs műveletekre terveztek. ProcessingCore egységek 2D rácsát szimulálja, amelyek Network-on-Chip (NoC) segítségével kapcsolódnak egymáshoz.
+
+Feldolgozó mag és NoC
+
+Minden ProcessingCore független szereplőként működik saját:
+
+1. Helyi gráffal: A SelfSimilarRelationalGraph egy részhalmazával.
+2. Üzenetsorral: NoCMessage csomagokat tárol az aszinkron kommunikációhoz.
+3. Állapotgéppel: idle, processing, communicating és power_gated állapotok között vált.
+
+Network-on-Chip szimuláció
+
+A NoC NoCMessage struktúrát alkalmaz a magok közötti kommunikáció megkönnyítéséhez. Az üzenetek típusosak (pl. weight_update, graph_sync, isomorphism_result) és prioritásosak.
+
+- XY-útválasztás: Az üzenetek először az X-tengely, majd az Y-tengely mentén kerülnek irányításra a target_core eléréséhez.
+- Teljesítménykapuzás: A PowerGatingController figyeli a mag aktivitást és az üresjáratban lévő magokat power_gated állapotba helyezi az energiafogyasztás csökkentéséhez.
+
+Vektor Feldolgozó Egység (VPU)
+
+Míg a FractalLPU kezeli a gráf szintű csempézést, a VPU biztosítja az alacsony szintű matematikához szükséges SIMD primitíveket. A SimdVector struktúra burkolja a Zig @Vector típusát az ellenőrzött aritmetika biztosításához.
+
+Főbb VPU műveletek:
+
+- SIMD matematika: Támogatja az add, sub, mul és divChecked műveleteket.
+- Relációs műveletek: Tartalmaz fma (Fúzionált Szorzás-Összeadás) és dot szorzatokat.
+- Normalizálás: normalize és magnitude biztosított a relációs jel vektorok feldolgozásához.
+
+Vektor típus definíciók
+
+A rendszer több vektor szélességet és típust támogat a VectorType-ban definiálva:
+
+| Típus | Sávok | Igazítás | Felhasználási eset |
+| :--- | :--- | :--- | :--- |
+| f32x8 | 8 | 32 bájt | Szabványos neurális súlyok |
+| f64x4 | 4 | 32 bájt | Nagy pontosságú relációs energia |
+| i32x8 | 8 | 32 bájt | FractalLPU rögzített pontos műveletek |
+
+---
+
+7.3 RTL HARDVER LEÍRÁSOK
+
+Ez az oldal dokumentálja a Clash-ben (egy Haskell-alapú HDL fordító) megvalósított Register Transfer Level (RTL) hardver modulokat. Ezek a modulok speciális hardver gyorsítást biztosítanak a memória arbitrációhoz, rangsoroláshoz és index kereséshez a JAIDE rendszeren belül.
+
+MemoryArbiter
+
+A MemoryArbiter modul rögzített prioritású arbitrációs Véges Állapotgépet (FSM) valósít meg a megosztott memória erőforráshoz való egyidejű hozzáférés kezeléséhez több hardver kliens számára. Kölcsönösen kizárólagos hozzáférést biztosít a megosztott memória erőforráshoz, miközben kezeli a kérés-válasz ciklusokat.
+
+Implementációs részletek
+
+Az arbitrátor Mealy gépként van megvalósítva az arbiterT átmeneti függvény segítségével. 4 klienst (NumClients) kezel és rögzített 4 ciklusos (ServiceCycles) kiszolgálási ablakot érvényesít megadott kérésenként.
+
+Állapotok és átmenetek
+
+Az arbitrátor két elsődleges állapotban működik az ArbiterState-ben definiálva:
+
+- ArbIdle: Az arbitrátor átvizsgálja a clientReqs-t a findIndex segítségével az első aktív kérés azonosításához. Ha talál, ArbServing-re vált és hozzáférést biztosít a specifikus ClientID4-nek.
+- ArbServing: Az arbitrátor fenntartja az aktuális kapcsolatot a ServiceCycles által meghatározott időtartamig. Növeli a belső számlálót, amíg el nem éri a határt, majd visszatér az ArbIdle-hoz.
+
+Adatfolyam és demultiplexálás
+
+Az arbitrátor egyetlen MemRequest-et ad ki a memória vezérlőnek és MemResponse jelek vektorát vissza a klienseknek. A válaszok a filterResp függvény segítségével kerülnek demultiplexálásra, amely biztosítja, hogy a válasz csak a respClient azonosítóval egyező kliensnek legyen látható.
+
+SSI keresési logika állapottáblázat
+
+| Állapot | Átmeneti feltétel | Művelet |
+| :--- | :--- | :--- |
+| Idle | Just SearchRequest | Átmenet Fetching-re rootAddr segítségével. |
+| Fetching | Just TreeNode | Átmenet Comparing-ra vagy rekurzió. |
+| Comparing | key == nodeKey | Leállítás SearchResult(found=True) eredménnyel. |
+| Comparing | key < nodeKey | Átmenet Fetching(leftChild)-re. |
+| Comparing | key > nodeKey | Átmenet Fetching(rightChild)-re. |
+
+RankerCore
+
+A RankerCore egy hardver gyorsító, amelyet a visszakeresés során a szegmensek pontszámainak kiszámítására terveztek. Pozíció-torzított rangsorolási algoritmust valósít meg, amely az eredményeket az eredeti szekvencia pozíciójuk alapján súlyozza.
+
+Pontozási logika
+
+A mag finalScore-t számít a baseScore és egy számított bias kombinálásával.
+
+- Pozíció torzítás: A computePositionBias segítségével számítva, amely reciprok skálázást alkalmaz: positionBiasScale / (position + 1).
+- Skálázási tényező: A positionBiasScale 1000-re van rögzítve.
+
+Állapotkezelés
+
+A RankerState nyomon követi a stateCounter-t (az azonos hash-re vonatkozó szekvenciális lekérdezések észleléséhez) és a lastScore-t. Ha egy új RankRequest megegyezik a lastQuery-vel, a belső rang számláló növekszik; egyébként 1-re áll vissza.
+
+SSISearch
+
+Az SSISearch modul egy hardver motor a Szegmentált Szekvencia Index (SSI) fák bejárásához. Nagy sebességű HashKey64 kulcsok keresését végzi a memóriában tárolt fa struktúrán belül.
+
+Keresési FSM
+
+A motor háromállapotú FSM-et valósít meg a SearchState által definiálva:
+
+1. Idle: SearchRequest-re vár, amely tartalmaz egy searchKey-t és egy rootAddr-t.
+2. Fetching: Memória kérést ad ki egy TreeNode-hoz egy specifikus NodeAddr32-nél.
+3. Comparing: Miután egy TreeNode megérkezik, a checkNode összehasonlítja a searchKey-t a nodeKey-vel. Ezután dönt, hogy leállítja (megtalálva/nem találva) vagy visszatér Fetching-re a leftChild vagy rightChild esetén.
+
+Korlátok és biztonság:
+
+- Max mélység: A rosszul formált fákban való végtelen ciklusok megelőzéséhez a keresés depthExceeded eredménnyel leáll, ha a currentDepth eléri a MaxSearchDepthConfig-ot (64).
+- Null mutatók: A motor kifejezetten ellenőrzi a nullAddr-t (0) a gyermekek lekérésének megkísérlése előtt.
+
+---
+
+8 ELOSZTOTT TANÍTÁS
+
+Az elosztott tanítást a JAIDE-ban egy több GPU-s orchestrációs réteg kezeli, amely NCCL-t (NVIDIA Kollektív Kommunikációs Könyvtár) alkalmaz a nagy teljesítményű kommunikációhoz és Futhark-ot a gyorsított kernel végrehajtáshoz. A rendszer egy-rang-per-eszköz modellt követ, ahol több folyamat szinkronizálja a gradienseket és a köteg statisztikákat a nagy léptékű RSF modellek tanításához.
+
+Rendszer architektúra
+
+Az elosztott tanítási verem áthidalja a magas szintű tanítási logikát az alacsony szintű GPU hardver kezeléssel. A DistributedTrainerFuthark orchestrálja a tanítási ciklust, míg a GPUCoordinator kezeli az alapul szolgáló NCCL kommunikátorokat és CUDA streameket.
+
+Elosztott tréner
+
+A DistributedTrainerFuthark a több GPU-s tanítás központi struktúrája. Integrálja az MGT tokenizálót, az RSFAccelerator-t és a Mag Relációs Réteget (NSIR, CREV és ReasoningOrchestrator) egy egységes tanítási interfész biztosításához.
+
+Főbb felelősségek:
+
+- Inicializálás: Rang-tudatos környezetek beállítása, ahol minden tréner példány ismeri a world_size-t és a rank-ot.
+- Folyamat végrehajtás: A trainStepFuthark futtatása, amely kezeli a tokenizálást, a beágyazás kereséseket és az előre/visszafelé irányuló meneteket Futhark kerneleken keresztül.
+- Relációs integráció: A runCoreRelationalPass periodikus futtatása a neurális frissítések szinkronizálásához a SelfSimilarRelationalGraph-gal.
+- Ellenőrzőpont: Verzionált modell állapotok mentése és betöltése a klaszteren keresztül.
+
+GPU Koordinátor és NCCL
+
+A GPUCoordinator alacsony szintű kötéseket biztosít az NVIDIA hardveréhez és kommunikációs primitíveihez. Absztrahálja az NCCL és CUDA stream kezelés komplexitását egy tiszta Zig interfészbe.
+
+Főbb jellemzők:
+
+- Eszköz kezelés: Automatikusan leképezi a rangokat a helyi GPU-kra cudaSetDevice segítségével.
+- Kollektív műveletek: Szabványos elosztott primitívek megvalósítása, beleértve az allReduce, broadcast, allGather és reduceScatter műveleteket.
+- Szinkronizálás: Egy barrier megvalósítás egy dummy allReduce-on keresztül egy dedikált barrier_buffer-en.
+- Memória életciklus: Eszköz memória allokáció (cudaMalloc) és gazdagép-eszköz átvitelek kezelése egy elosztott rang kontextusában.
+
+Felhő telepítés
+
+Míg a JAIDE helyi klasztereken futhat, Modal felhő telepítésre van optimalizálva. Ez lehetővé teszi a DistributedTrainerFuthark gyors skálázását nagy teljesítményű A100/H100 példányokon. A telepítési szkriptek kezelik a Futhark által generált C kód konténerizálását és az NCCL könyvtárak linkelését a felhő környezetben.
+
+---
+
+8.1 ELOSZTOTT TRÉNER
+
+A DistributedTrainerFuthark a JAIDE rendszer több GPU-s tanításának elsődleges orchestrátora. Integrálja a Futhark-gyorsított RSF neurális vermet a Mag Relációs Réteggel, kezelve az adatpárhuzamosságot, a gradiens szinkronizálást NCCL-en keresztül és a nagy léptékű adathalmazok nagy teljesítményű I/O-ját.
+
+1. Inicializálás és konfiguráció
+
+A tréner az initWithConfig segítségével inicializálódik, amely beállítja a szükséges komponenseket mind a neurális, mind a relációs feldolgozáshoz. Szigorú validálást érvényesít a modell dimenziókon (amelyeknek párosnak kell lenniük az RSF csatoló rétegekhez) és a rang/világ méret paramétereken.
+
+Komponens összetétel
+
+A tréner több kritikus alrendszert aggregál:
+
+- MGT szókincs: Angol tokenek és morfológiai dekompozíciós szabályok alapkészletével inicializálva.
+- RSFAccelerator: Kezeli a Futhark GPU kontextust és a többrétegű RSF súlyokat.
+- Relációs verem: Tartalmazza a CREVPipeline-t, a ChaosCoreKernel-t, a SelfSimilarRelationalGraph-ot és a ReasoningOrchestrator-t.
+- GPUCoordinator: Kezeli a rang-specifikus eszköz hozzárendeléseket és az NCCL kollektív műveleteket.
+
+2. Elosztott adathalmaz betöltés
+
+A rendszer rang-tudatos JSONL betöltőt alkalmaz az adatpárhuzamosság megvalósításához. Minden rang kiszámítja az adathalmaz saját szeletét a GPU-k közötti átfedés elkerülése érdekében.
+
+Rang particionálási logika
+
+1. Minta számlálás: A teljes mintaszám a JAIDE_TOTAL_SAMPLES-ből vagy fájl átvizsgálással kerül lekérésre.
+2. Index számítás: Minden rang meghatározza a start_valid_index-ét és a samples_per_rank-ját a világ mérete és a saját rang azonosítója alapján.
+3. JSONL elemzés: Az extractDatasetText függvény JSON objektumokat elemez, kifejezetten a "text" kulcsot keresve.
+
+Adathalmaz particionálási táblázat
+
+| Paraméter | Leírás |
+| :--- | :--- |
+| base_per_rank | total_samples / world_size |
+| remainder | total_samples % world_size |
+| start_valid_index | Az aktuális rang eltolása a globális adathalmazban |
+
+3. Tanítási folyamat
+
+A trainStepFuthark függvény valósítja meg a mag tanítási ciklust, amely áthidalja a természetes nyelvi tokenek és a GPU-gyorsított tenzor műveletek közötti szakadékot.
+
+Adatfolyam: tokenizálás, beágyazás, kernelek
+
+1. Tokenizálás: A bemeneti szöveg token azonosítókká konvertálódik az MGT.tokenize segítségével.
+2. Beágyazás keresés: A token azonosítók sűrű vektorokra képeződnek le a LearnedEmbedding rétegben.
+3. Futhark előre irányuló menet: A beágyazások FutharkArray2DF16-ként kerülnek feltöltésre a GPU-ra és az RSF rétegeken keresztül kerülnek feldolgozásra.
+4. Relációs integráció: A runCoreRelationalPass meghívódik az NSIR gráf és az érvelési állapot frissítéséhez az aktuális köteg alapján.
+
+Gradiens szinkronizálás
+
+Egy korszak vagy köteg szekvencia végén a tréner allReduceFloat32Max-ot (vagy összeget) hajt végre a súly delták szinkronizálásához a klaszteren keresztül.
+
+4. Ellenőrzőpont kezelés
+
+A tréner verzionált ellenőrzőpontokat támogat a tanítás folytonosságának és a modell perzisztenciájának biztosítása érdekében.
+
+Mentés/betöltés mechanizmus
+
+- Verzió követés: A TrainerConfig meghatároz egy checkpoint_version-t (jelenleg v6) a kompatibilitás fenntartásához.
+- Szerializáció: Az RSF súlyok, beágyazási mátrixok és az NSIR gráf állapota bináris formátumba kerülnek szerializálva.
+- 0-ás rang felelőssége: Általában csak a gyökér rang (0-ás rang) végzi a tényleges fájl I/O-t az ellenőrzőpontokhoz az írási versengés elkerülése érdekében, amelyet egy broadcast követ a többi ranghoz.
+
+---
+
+8.2 GPU KOORDINÁTOR ÉS NCCL
+
+A GPU Koordinátor a JAIDE rendszer több GPU-s elosztott tanításának központi kezelő entitása. Egy-rang-per-eszköz modellt valósít meg, kezelve a CUDA eszközök, memória allokációk és nagy teljesítményű kollektív kommunikációk életciklusát NCCL (NVIDIA Kollektív Kommunikációs Könyvtár) kötéseken keresztül.
+
+Architektúra és eszközkezelés
+
+A GPUCoordinator struktúra kezeli a folyamat rangjának az elosztott "világban" és a hozzárendelt fizikai GPU-nak a kapcsolatát. Biztosítja, hogy minden folyamat egy specifikus CUDA eszközhöz legyen rögzítve a cudaSetDevice segítségével a rangja alapján.
+
+Adatfolyam: Inicializálás
+
+1. Eszköz hozzárendelés: A koordinátor meghatározza a device_id-t a rang és a helyi eszközszám modulójának kiszámításával.
+2. NCCL inicializálás: NCCL kommunikátort (ncclComm) inicializál az összes rangon megosztott egyedi azonosító segítségével.
+3. Stream létrehozás: Dedikált CUDA stream kerül létrehozásra az aszinkron kollektív műveletek számára a gazdagép oldali végrehajtás blokkolásának elkerülése érdekében.
+4. Barrier beállítás: Egy kis 4 bájtos puffer kerül allokálásra az eszközön a barrierek megkönnyítéséhez dummy kollektív műveletek segítségével.
+
+Eszköz memória kezelés
+
+A koordinátor egyszerűsített interfészt biztosít az eszközön tárolt memória kezeléséhez, a nyers CUDA mutatókat Zig-barát absztrakciókba burkolva.
+
+| Függvény | Cél | Implementációs részlet |
+| :--- | :--- | :--- |
+| allocDeviceMemory | Bájtokat allokál az aktuális GPU-n. | Meghívja az nccl.cudaMalloc-ot. |
+| freeDeviceMemory | Felszabadítja a GPU memóriát. | Meghívja az nccl.cudaFree-t. |
+| copyToDevice | Adatokat visz át a gazdagépről az eszközre. | cudaMemcpyHostToDevice-t alkalmaz. |
+| copyFromDevice | Adatokat visz át az eszközről a gazdagépre. | cudaMemcpyDeviceToHost-ot alkalmaz. |
+
+Kollektív műveletek
+
+Az elosztott tanítás magja az NCCL kollektívákon alapul. A GPUCoordinator ezeket aszinkron műveletekként teszi elérhetővé, amelyek a belső cuda_stream-en hajtódnak végre.
+
+Támogatott kollektívák
+
+- allReduce: Adatokat kombinál az összes rangból egy redukciós operátor (Összeg, Max stb.) segítségével és az eredményt visszaosztja az összes ranghoz.
+- broadcast: Puffert másol egy gyökér rangból az összes többi ranghoz.
+- allGather: Adatokat gyűjt az összes rangból és az összesített tömböt osztja el az összes ranghoz.
+- reduceScatter: Redukciót hajt végre, majd az eredményt szétszórja a rangok között.
+- barrier: Egy allReduce végrehajtásával valósul meg a belső barrier_buffer-en. Ez biztosítja, hogy az összes rang elérte ugyanazt a végrehajtási pontot.
+
+NCCL kötések
+
+A rendszer az NCCL megosztott könyvtárral egy vékony Zig burkolón keresztül kommunikál az nccl_bindings.zig fájlban. Ez a fájl definiálja a szükséges C-ABI típusokat és extern függvényeket.
+
+- Eredménykódok: Az ncclResult_t enum leképezi az NCCL visszatérési kódokat, mint az ncclSuccess és az ncclUnhandledCudaError.
+- Adattípusok: Zig/Futhark típusokat képez le NCCL típusokra, mint az ncclFloat32 vagy az ncclBfloat16.
+- Redukciós operátorok: Definiál olyan műveleteket, mint az ncclSum, ncclProd és ncclMax.
+
+Modal integráció
+
+Felhő léptékű tanításhoz a ModalGPUClient és a kapcsolódó Python szkriptek orchestrálják az elosztott bináris telepítését.
+
+- Erőforrás specifikáció: A tanítási feladatok csúcskategóriás hardverre vannak konfigurálva, kifejezetten B200 vagy B300 GPU-kat kérve.
+- Környezet beállítás: A Modal image az nvidia/cuda:12.8.1-devel-ubuntu24.04 alapján épül és tartalmazza a szükséges libnccl2 és libnccl-dev könyvtárakat.
+- Feladat telepítés: A deployTrainingJob függvény szerializálja a tanítási paramétereket és elküldi azokat a Modal API-hoz.
+
+---
+
+9 BIZTONSÁG, ELLENŐRZÉS ÉS VÉDELEM
+
+A JAIDE rendszer többrétegű biztonsági és helyességi architektúrát tartalmaz, amelyet a modell következtetés integritásának, a tanítási adatok adatvédelmének és az alapvető algoritmusok matematikai megalapozottságának biztosítására terveztek. Ez az alrendszer áthidalja az alacsony szintű memória biztonsági primitíveket a magas szintű kriptográfiai bizonyítékokkal és formális ellenőrzéssel.
+
+Rendszer biztonsági és védelmi áttekintés
+
+A biztonsági architektúra négy fő területre épül:
+
+- Formális ellenőrzés: oftb.lean és security_proofs.zig
+- Nulla-Tudás bizonyítékok: VerifiedInferenceEngine és ZKInferenceProver
+- Adathalmaz adatvédelem: HomomorphicEncryption és DatasetFingerprint
+- Memória biztonság: safeIntCast és SecureRng
+
+Ellenőrzött Következtetési Motor
+
+A VerifiedInferenceEngine "kötelezd el-majd-bizonyítsd" életciklust biztosít a modell végrehajtáshoz. Biztosítja, hogy az RSF (Visszafordítható Szórt Folyam) verem által generált kimenet egy specifikus bemenet és modell állapot determinisztikus eredménye, anélkül, hogy felfedné a belső súlyokat.
+
+Főbb jellemzők:
+
+- Elkötelezési sémák: Blake3-at alkalmaz a bemeneti/kimeneti elkötelezésekhez.
+- Nyom rögzítés: Működési nyomot rögzít a következtetés során a ProofOfCorrectness segítségével.
+- Skálázható ellenőrzés: BatchVerifier-t és ProofAggregator-t valósít meg Merkle fák segítségével több következtetés egyidejű ellenőrzéséhez.
+
+Adathalmaz adatvédelem és elhomályosítás
+
+A JAIDE kriptográfiai elhomályosítás és statisztikai adatvédelmi intézkedések kombinációján keresztül védi az érzékeny tanítási adatokat. A HomomorphicEncryption modul a Paillier kriptoszisztémát valósítja meg, lehetővé téve korlátozott aritmetikai műveleteket titkosított adatokon.
+
+Formális ellenőrzés és biztonsági primitívek
+
+A JAIDE megbízhatóságának alapja biztonsági primitívek készlete, amelyek megakadályozzák a szoftver általános sebezhetőségeit, mint az egész szám túlcsordulások és a mutató helytelen igazítása.
+
+Biztonsági segédprogramok:
+
+- safeIntCast: Validálja az előjelet és a bit szélességet az IntegerOverflow és IntegerUnderflow megelőzéséhez.
+- safePtrCast: Biztosítja, hogy a mutatók nem null értékűek és helyesen igazítottak a célhoz.
+
+SecureRng
+
+A SecureRng struktúra hibrid megközelítést valósít meg az entrópiához. Az std.crypto.random rendszer által biztosított kriptográfiai véletlenszerűséget keveri egy Lineáris Kongruenciális Generátor (LCG) tartalék állapottal a magas minőségű véletlenszerűség biztosítása érdekében még nagy versengés esetén vagy korlátozott entrópia forrásokkal rendelkező környezetekben is.
+
+Kriptográfiai primitívek
+
+Az érzékeny adatkezeléshez a JAIDE biztosítja:
+
+- secureZeroBytes: Biztosítja, hogy a memória törlésre kerüljön anélkül, hogy a fordító optimalizálná el.
+- constantTimeCompare: Megakadályozza az időzítési támadásokat azáltal, hogy bájt puffereket rögzített számú ciklusban hasonlít össze.
+
+Formális ellenőrzés
+
+A JAIDE formális ellenőrzést alkalmaz a legkritikusabb algoritmusok helyességének bizonyítására, kifejezetten a neurális rétegben alkalmazott Ortogonális Fraktál Transzformációs Blokkhoz (OFTB).
+
+Lean4 bizonyítékok (oftb.lean)
+
+Az src/verifaction/oftb.lean fájl Lean4 tételeket tartalmaz, amelyek validálják a split_at művelet tulajdonságait, amely alapvető az OFTB pillangó stílusú keveréséhez.
+
+Bizonyíték motor (formal_verification.zig)
+
+A formal_verification.zig fájl futásidejű bizonyíték ellenőrzőt valósít meg a gráf invariánsokhoz. InvariantType-ot (pl. MEMORY_SAFETY, COHERENCE) és ProofRule-t (pl. MODUS_PONENS, INDUCTION) definiál a SelfSimilarRelationalGraph állapotának validálásához.
+
+Biztonsági tulajdonságok és típuselmélet
+
+A JAIDE biztonsági modellje formális típuselmélet és információáramlás vezérlés alapján épül fel.
+
+BigInt512 aritmetika
+
+A homomorf titkosításhoz és nagy léptékű koordináta rendszerekhez a JAIDE BigInt512 aritmetikát valósít meg a safety.zig fájlban. Ez tartalmaz konstans idejű összehasonlítást és biztonságos nullázást annak biztosítására, hogy a nagy egész szám műveletek ne szivárogtatnak ki oldalsó csatorna információkat.
+
+---
+
+10 TESZTELÉS ÉS BENCHMARKING
+
+A JAIDE kódbázis átfogó teljesítmény benchmark és stressz teszt csomagot tartalmaz, amelyet a mag matematikai és relációs alrendszerek hatékonyságának és helyességének validálására terveztek. Ez az infrastruktúra biztosítja, hogy az optimalizálások - mint a SIMD vektorizáció, a többszálú mátrixszorzás és a lock-free referenciaszámlálás - stabil és teljesítő maradjanak az architektúrális változások során.
+
+Magas szintű teszt architektúra
+
+A tesztelési infrastruktúra három elsődleges kategóriára van osztva:
+
+1. Teljesítmény benchmarkok: Dedikált futtatható fájlok, amelyek mérik az áteresztőképességet (GFLOPS, elemek/mp) a kritikus útvonalakon, mint az RSF és a Tenzor műveletek.
+2. Stressz tesztek: Nagy párhuzamossági környezetek, amelyek versenyhelyzeteket keresnek a memóriakezelésben és a referenciaszámlálásban.
+3. Egységtesztek: Build rendszerbe integrált tesztek az alrendszerek logikájának validálásához, mint az NSIR és a CREV.
+
+A benchmark csomag egy központi függőségi modulra támaszkodik, az src/_bench_deps.zig-re, amely belső névtereket (rsf, core_tensor, sfd) tesz elérhetővé a tesztelési futtatók számára.
+
+Benchmark csomag
+
+A teljesítmény csomag értékeli a rendszer neurális és matematikai primitíveinek számítási korlátait.
+
+- RSF áteresztőképesség: A bench_rsf méri az elemek-per-másodperc feldolgozást a Visszafordítható Szórt Folyam modell előre és visszafelé irányuló menetei során. Ellenőrzi a verem matematikai invertálhatóságát is.
+- Lineáris algebra: A bench_matmul benchmarkol a csempézett, gyorsítótár-barát mátrixszorzást (i-p-j ciklus sorrend) változó mátrix méreteken (128-tól 1024-ig), GFLOPS-ban jelenti a teljesítményt.
+- SIMD műveletek: A bench_tensor_ops az elemenként végzett sávszélesség kihasználásra összpontosít a fill, add és mul műveleteknél nagy folytonos memória blokkokra (4M elem), GB/s-ban jelenti az eredményeket.
+- Optimalizálási sebesség: A bench_sfd profilálja az FP4 kvantálási logikát és a SpectralNormalizer hatványiterációkat, összehasonlítva a "teljes" és "ritka" frissítési sebességeket.
+
+Stressz és egységtesztek
+
+A stressz tesztelés kritikus a JAIDE egyedi memóriakezeléséhez, különösen a Tensor referenciaszámlálási rendszerhez, amely atomi műveleteket alkalmaz a szálbiztonsághoz.
+
+- Referenciaszámlálás stressz: A stress_tensor_refcount.zig több szálat indít (alapértelmezés 12), amelyek ezernyi véletlenszerű retain és release műveletet hajtanak végre egy megosztott tenzor készleten. A teszt validálja, hogy az összes tenzor végső referenciaszámlálója pontosan 1-re tér vissza, biztosítva, hogy nem történt szivárgás vagy dupla felszabadítás versengés alatt.
+- Alrendszer egységtesztek: A build rendszer specifikus teszt célokat definiál:
+  - test-tensor: Validálja az alak/lépés logikát és az alapvető matematikát.
+  - test-nsir: Biztosítja a gráf topológia integritását és az SHA-256 hashelést.
+  - test-crev: Validálja az oksági érvelési lánc kivonást.
+  - test-temporal: Ellenőrzi a nanoszekundum pontosságú állapot pillanatképeket.
+
+---
+
+10.1 BENCHMARK CSOMAG
+
+A JAIDE benchmark csomag átfogó teljesítményértékelési eszközöket biztosít a rendszer mag számítási komponenseihez. Ezek a benchmarkok a Visszafordítható Szórt Folyam (RSF) rétegeket, a többszálú tenzor aritmetikai motort, a SIMD-vektorizált elemenként végzett műveleteket és a Spektrális Fisher Diagonalizáló (SFD) optimalizáló primitíveket célozzák.
+
+A csomag különböző munkaterhelések teljesítményének validálására van tervezve, biztosítva, hogy az optimalizálások, mint a csempézett mátrixszorzás és az FP4 kvantálás, megfeleljenek a JAIDE architektúra áteresztőképességi követelményeinek.
+
+Függőség aggregáció
+
+A benchmark csomag centralizált függőségi modult alkalmaz a belső névterek tesztelési futtatók számára való elérhetővé tételéhez.
+
+| Névtér | Forrásfájl | Leírás |
+| :--- | :--- | :--- |
+| rsf | src/_bench_deps.zig | Visszafordítható Szórt Folyam neurális verem komponensek. |
+| core_tensor | src/_bench_deps.zig | Alapvető Tensor műveletek és memória elrendezés. |
+| sfd | src/_bench_deps.zig | Spektrális Fisher Diagonalizáló és optimalizálási primitívek. |
+
+RSF áteresztőképesség (bench_rsf)
+
+A bench_rsf modul méri a Visszafordítható Szórt Folyam processzor áteresztőképességét mind előre, mind visszafelé irányban. Mivel az RSF rétegek bijektívek, a visszafelé irányuló menet mind a gradiens propagáláshoz, mind az inverz következtetéshez alkalmazható.
+
+Implementációs részletek
+
+- Konfiguráció: Alapértelmezés szerint 512-es dimenzió, 128 réteg és 64-es köteg méret.
+- Folyamat:
+  1. Inicializál egy RSF modell példányt.
+  2. 20 iterációs bemelegítési fázist hajt végre.
+  3. 200 időzített iterációt hajt végre a model.forward(&y) segítségével.
+  4. 200 időzített iterációt hajt végre a model.backward(&grad_output, &x, &y, &grad_input) segítségével.
+  5. Ellenőrzi az invertálhatóságot a model.verifyInvertible segítségével a numerikus stabilitás biztosításához.
+
+Mátrixszorzás (bench_matmul)
+
+A bench_matmul segédprogram értékeli a csempézett, gyorsítótár-barát i-p-j mátrixszorzás implementáció teljesítményét a Tensor osztályban.
+
+Teljesítmény mérőszámok
+
+A benchmark 128, 256, 512 és 1024 méretű négyzetes mátrixokon iterál. Minden mérethez kiszámítja:
+
+- Teljes idő: Kumulatív idő 100 iterációhoz.
+- Iterációnkénti: Átlagos késleltetés matmul hívásonként.
+- Áteresztőképesség (GFLOPS): 2.0 × N^3 × iterációk / másodpercek képlettel számítva.
+
+Tenzor elemenként végzett műveletek (bench_tensor_ops)
+
+Ez a benchmark a SIMD-vektorizált elemenként végzett műveletekre összpontosít nagy folytonos memória blokkokra (4M elem). Méri a Tensor implementáció memória sávszélesség kihasználását.
+
+Értékelt műveletek
+
+| Függvény | Leírás |
+| :--- | :--- |
+| benchFill | Méri a t.fill(val) sebességét és GB/s sávszélességét. |
+| benchAdd | Méri az a.add(&b) elemenként végzett összeadást. |
+| benchMul | Méri az a.mul(&b) elemenként végzett szorzást. |
+
+SFD optimalizáló primitívek (bench_sfd)
+
+A bench_sfd benchmark a Spektrális Fisher Diagonalizáló által alkalmazott specifikus matematikai kerneleket célozza, kifejezetten az FP4 kvantálást és a Spektrális Normalizálást.
+
+FP4 kvantálás
+
+A benchmark teszteli a quantizeFP4 logikát, amely értékeket vág [-6.0, 6.0] tartományra és diszkrét 4 bites lebegőpontos reprezentációra képezi le azokat. 1M értéket dolgoz fel 100 iteráción keresztül az elemenkénti nanoszekundum meghatározásához.
+
+Spektrális normalizálás
+
+Értékeli a SpectralNormalizer.normalizeWeights függvényt. A benchmark összehasonlítja:
+
+1. Teljes hatványiterációk: 20 iteráció a nagy pontosságú szinguláris érték becsléshez.
+2. Ritka hatványiterációk: 5 iteráció a tanítás során végzett gyors közelítéshez.
+
+---
+
+10.2 STRESSZ TESZTEK ÉS EGYSÉGTESZTEK
+
+A JAIDE tesztelési infrastruktúra biztosítja a rendszer matematikai helyességét, memória biztonságát és párhuzamos stabilitását. Ez az oldal részletezi a párhuzamos referenciaszámlálás speciális stressz tesztjeit és a Zig build rendszerben definiált egységtesztek csomagját a mag relációs és neurális komponensekhez.
+
+1. Stressz teszt: stress_tensor_refcount
+
+A stress_tensor_refcount segédprogram dedikált eszköz a Tensor referenciaszámlálási mechanizmus szálbiztonságának validálásához. Mivel a JAIDE Másolás-íráskor (CoW) szemantikára és megosztott memóriára támaszkodik több szálon keresztül (pl. matmul vagy elosztott tanítás során), a retain() és release() atomi integritása kritikus.
+
+Implementációs részletek
+
+A teszt több szálat indít, amelyek egyidejűleg véletlenszerű referencia műveleteket hajtanak végre egy megosztott Tensor objektum készleten.
+
+- Szinkronizálás: Egy std.atomic.Value(usize) barrier biztosítja, hogy az összes szál egyidejűleg kezdje el a műveleteket a versengés maximalizálásához.
+- Munkaterhelés: Minden threadWorker konfigurálható számú műveletet hajt végre (ops_per_thread). A műveletek tartalmazzák az egyszeres retain-eket, dupla retain-eket és több tenzoros retain-eket a komplex adatfolyamok szimulálásához.
+- Ellenőrzés: Miután az összes szál csatlakozik, a teszt ellenőrzi, hogy minden tenzor végső referenciaszámlálója pontosan 1-re tért vissza (az eredeti tulajdonosi referencia).
+
+Referenciaszámlálás stressz teszt adatfolyam
+
+| Rendszer fogalom | Kód entitás |
+| :--- | :--- |
+| Párhuzamos munkás | threadWorker |
+| Atomi barrier | std.atomic.Value(usize) |
+| Referencia növelés | Tensor.retain() |
+| Referencia csökkentés | Tensor.release() |
+| Biztonsági ellenőrzés | getRefcount |
+
+2. Build rendszer egységtesztek
+
+A JAIDE a Zig build rendszert alkalmazza moduláris teszt lépések definiálásához. Ezek egyenként vagy összesítve futtathatók a test-all lépésen keresztül.
+
+2.1 Mag relációs tesztek
+
+Ezek a tesztek validálják az NSIR (Önhasonló Relációs Gráf) és az érvelési folyamatok integritását.
+
+| Teszt lépés | Célmodul | Validálási hatókör |
+| :--- | :--- | :--- |
+| test-nsir | nsir_core.zig | Csomópont/él létrehozás, kvantum kapu alkalmazás és topológia hashelés. |
+| test-reasoning | reasoning_orchestrator.zig | Energia számítás, állapot pillanatképek és ESSO szimmetria észlelés. |
+| test-crev | crev_pipeline.zig | Oksági érvelés, hármas kivonás és validálási láncok. |
+| test-temporal | temporal_graph.zig | QuantumState pillanatképek és idősor gráf evolúció. |
+| test-surprise | surprise_memory.zig | Jaccard-disszimilaritás szűrés és CAS elkötelezési küszöbök. |
+
+2.2 Neurális és memória tesztek
+
+Ezek validálják az alapvető matematikai és memóriakezelési primitíveket.
+
+- test-tensor: Validálja a Tensor alak/lépés elrendezést, a SIMD-vektorizált elemenként végzett műveleteket és a bináris szerializációs formátumot.
+- test-memory: Validálja a speciális allokátorokat, beleértve az ArenaAllocator-t, SlabAllocator-t és BuddyAllocator-t a töredezettség és teljesítmény szempontjából.
+- test-rsf: Validálja az RSFLayer affin csatolást (skála S és fordítás T) és az előre/inverz menet visszafordíthatóságát.
+- test-oftb: Validálja az Ortogonális Fraktál Transzformációs Blokk pillangó stílusú keverési transzformációit.
+
+3. Teszt végrehajtás és konfiguráció
+
+Tesztek futtatása
+
+A tesztek a zig build paranccsal hajthatók végre. A felhasználók specifikus alrendszereket vagy a teljes csomagot célozhatják:
+
+zig build test-all
+
+zig build test-tensor
+zig build test-nsir
+
+zig build test-rsf -Dgpu=true
+
+Optimalizálási statisztikák
+
+A relációs optimalizálási tesztek során (pl. ESSO) a rendszer OptimizationStatistics-t követ nyomon a sztochasztikus folyamatok helyes konvergenciájának biztosítása érdekében.
+
+Optimalizálási mérőszámok követése:
+
+- iterations_completed
+- moves_accepted
+- best_energy
+- temperature
+
+4. Hibakezelés a tesztekben
+
+A teszt csomag szabványosított C-kompatibilis hibakódok készletét alkalmazza a c_api-ban definiálva, biztosítva, hogy a mag relációs réteg meghibásodásai nagy granularitással kerüljenek jelentésre.
+
+| Hibakód | Jelentés |
+| :--- | :--- |
+| JAIDE_ERROR_ALLOCATION | Memória meghibásodás a speciális allokátorokban. |
+| JAIDE_ERROR_NODE_NOT_FOUND | NSIR gráf keresési meghibásodás. |
+| JAIDE_ERROR_MATH_ERROR | Túlcsordulás vagy alulcsordulás a neurális/kvantum műveletekben. |
+| JAIDE_ERROR_THREADING | Mutex versengés vagy atomi meghibásodás. |
+
+---
+
+11 SZÓJEGYZÉK
+
+Ez az oldal technikai definíciókat és kód-specifikus mutatókat biztosít a JAIDE rendszer architektúrális komponenseihez, matematikai primitívjeihez és kognitív fogalmaihoz.
+
+1. Architektúrális paradigmák
+
+5. gyök architektúra
+
+A JAIDE alapvető paradigmája, amely a Perceptron, CNN, RNN és Transformer után következik. A Visszafordítható Szórt Folyam (RSF) segítségével valósul meg, amely a bijektivitást és az O(dim) memória komplexitást helyezi előtérbe.
+
+RSF (Visszafordítható Szórt Folyam)
+
+Kereszt-affin csatoló rétegekből és determinisztikus szórt permutációkból álló neurális architektúra. Minden réteg bijektív, lehetővé téve az aktivációk pontos inverz rekonstrukcióját a visszafelé irányuló menet során aktiváció gyorsítótár nélkül.
+
+- Implementáció: LayerCore az src/processor/rsf.zig fájlban.
+- Matematikai forma:
+  - Előre: y1 = x1 ⊙ exp(clip(Ws · x2 + bs))
+  - Inverz: x2 = y2 - Wt · y1 - bt
+
+Mag Relációs Réteg
+
+A JAIDE kognitív alrendszere, amely magas szintű érvelést, gráf alapú tudásreprezentációt és kvantum-inspirált optimalizálást kezel.
+
+2. Neurális tér és kód entitás leképezés
+
+Az RSF feldolgozási folyamat:
+
+A felhasználói prompt (karakterlánc) a MorphoGraphTokenizer (mgt.zig) segítségével tokenizálódik, majd a LearnedEmbedding (learned_embedding.zig) beágyazásokat végez, az RSF modell (rsf.zig) feldolgozza, az OFTB (oftb.zig) szórást/gyűjtést végez, majd az inverseInPlace() aktiváció rekonstrukciót hajt végre.
+
+3. Mag terminológia táblázat
+
+| Kifejezés | Definíció | Kód mutató |
+| :--- | :--- | :--- |
+| NSIR (SSRG) | Önhasonló Relációs Gráf. Egy gráf, ahol az élek kvantum-inspirált korrelációkat képviselnek a tokenek között. | src/core_relational/nsir_core.zig |
+| EdgeQuality | Enum, amely meghatározza egy gráf él állapotát: szuperpozíció, összefonódott, koherens, összeomlott vagy fraktál. | src/core_relational/nsir_core.zig |
+| OFTB | Ortogonális Fraktál Transzformációs Blokk. Paraméter nélküli Haar-wavelet alapú keverési réteg O(1) memóriával. | src/processor/rsf.zig |
+| SFD | Spektrális Fisher Diagonalizáló. Másodrendű optimalizáló, amely Fisher információs mátrix átló becslést alkalmaz. | src/optimizer/sfd.zig |
+| SSI | Önhasonló Index. Pozíció-megőrző külső memória struktúra, amely O(log n) visszakeresést tesz lehetővé. | src/index/ssi.zig |
+| ESSO | Összefonódott Sztochasztikus Szimmetria Optimalizáló. Gráf topológiát optimalizál szimulált hűtéssel a szimmetriákon. | src/core_relational/reasoning_orchestrator.zig |
+| Qubit | Komplex értékű primitív (Complex(f64)), amelyet a csomópont állapotok reprezentálásához alkalmaznak az NSIR gráfban. | src/core_relational/nsir_core.zig |
+| ThoughtLevel | Hierarchikus érvelési fázisok: helyi (token szintű), globális (kontextus szintű) és meta (rendszer szintű). | src/core_relational/reasoning_orchestrator.zig |
+
+4. Alrendszer specifikus fogalmak
+
+Memóriakezelési primitívek
+
+- MemoryBlockState: Meghatározza egy memória blokk életciklusát: szabad, allokált, összefonódott vagy migrálódó.
+- PinnedMemory: cudaHostAlloc segítségével allokált memória a nagy sebességű gazdagép-eszköz átvitelek megkönnyítéséhez.
+
+Kriptográfia és ellenőrzés
+
+- HomomorphicEncryption: A Paillier kriptoszisztéma implementációja additív homomorf műveletekhez érzékeny adathalmazokon.
+- ZKProofBundle: Tároló a Groth16 bizonyítékokhoz, nyilvános jelekhez és ellenőrzési állapothoz a nulla-tudás következtetéshez.
+
+Hardver gyorsítás
+
+- WeightKind: Súlytípusok felsorolása (pl. weights_s, weights_t, velocity_s), amelyeket a Futhark/CUDA gyorsítói interfész alkalmaz.
+- FutharkContext: Kezeli a Futhark GPU futtatókörnyezet életciklusát, beleértve az eszköz kiválasztást és a parancs szinkronizálást.
