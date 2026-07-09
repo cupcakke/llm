@@ -21,7 +21,7 @@ pub const RSFConfig = struct {
     max_layers: usize = 1 << 20,
 };
 
-const SAVE_VERSION: u32 = 4;
+const SAVE_VERSION: u32 = 5;
 
 var scratch_gpa_backing = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -134,12 +134,8 @@ fn validateModelConfigValues(dim: usize, num_layers: usize, cfg: RSFConfig) !voi
 const LayerCore = struct {
     s_weight: Tensor,
     t_weight: Tensor,
-    s_bias: Tensor,
-    t_bias: Tensor,
     s_weight_grad: ?Tensor,
     t_weight_grad: ?Tensor,
-    s_bias_grad: ?Tensor,
-    t_bias_grad: ?Tensor,
     dim: usize,
     allocator: Allocator,
     clip_min: f32,
@@ -151,7 +147,7 @@ const LayerCore = struct {
         if (dim == 0) return error.InvalidDimension;
         try validateClipRange(config.clip_min, config.clip_max);
 
-        _ = try checkedMul(dim, dim);
+        _ = try checkedMul(dim, dim + 1);
 
         const fan_in: f32 = @floatFromInt(dim);
         const fan_out: f32 = @floatFromInt(dim);
@@ -159,8 +155,7 @@ const LayerCore = struct {
         if (!(fan_sum > 0.0)) return error.InvalidDimension;
 
         const xavier_bound: f32 = @sqrt(6.0 / fan_sum);
-        const weight_shape = [_]usize{ dim, dim };
-        const bias_shape = [_]usize{ 1, dim };
+        const weight_shape = [_]usize{ dim, dim + 1 };
 
         const seed1 = try checkedAddU64(42, config.seed_offset);
         const seed2 = try checkedAddU64(43, config.seed_offset);
@@ -171,21 +166,16 @@ const LayerCore = struct {
         var t_w = try Tensor.randomUniform(allocator, &weight_shape, -xavier_bound, xavier_bound, seed2);
         errdefer t_w.deinit();
 
-        var s_b = try Tensor.zeros(allocator, &bias_shape);
-        errdefer s_b.deinit();
-
-        var t_b = try Tensor.zeros(allocator, &bias_shape);
-        errdefer t_b.deinit();
+        for (0..dim) |d| {
+            s_w.data[d * (dim + 1) + dim] = 0.0;
+            t_w.data[d * (dim + 1) + dim] = 0.0;
+        }
 
         return LayerCore{
             .s_weight = s_w,
             .t_weight = t_w,
-            .s_bias = s_b,
-            .t_bias = t_b,
             .s_weight_grad = null,
             .t_weight_grad = null,
-            .s_bias_grad = null,
-            .t_bias_grad = null,
             .dim = dim,
             .allocator = allocator,
             .clip_min = config.clip_min,
@@ -198,62 +188,41 @@ const LayerCore = struct {
     fn deinitOwned(self: *LayerCore) void {
         self.s_weight.deinit();
         self.t_weight.deinit();
-        self.s_bias.deinit();
-        self.t_bias.deinit();
         if (self.s_weight_grad) |*g| g.deinit();
         if (self.t_weight_grad) |*g| g.deinit();
-        if (self.s_bias_grad) |*g| g.deinit();
-        if (self.t_bias_grad) |*g| g.deinit();
         self.s_weight_grad = null;
         self.t_weight_grad = null;
-        self.s_bias_grad = null;
-        self.t_bias_grad = null;
     }
 
     pub fn ensureGradients(self: *LayerCore) !void {
         const need_swg = self.s_weight_grad == null;
         const need_twg = self.t_weight_grad == null;
-        const need_sbg = self.s_bias_grad == null;
-        const need_tbg = self.t_bias_grad == null;
 
-        if (!(need_swg or need_twg or need_sbg or need_tbg)) return;
+        if (!(need_swg or need_twg)) return;
 
-        const weight_shape = [_]usize{ self.dim, self.dim };
-        const bias_shape = [_]usize{ 1, self.dim };
+        const weight_shape = [_]usize{ self.dim, self.dim + 1 };
 
         var swg_new: ?Tensor = null;
         var twg_new: ?Tensor = null;
-        var sbg_new: ?Tensor = null;
-        var tbg_new: ?Tensor = null;
 
         errdefer {
             if (swg_new) |*t| t.deinit();
             if (twg_new) |*t| t.deinit();
-            if (sbg_new) |*t| t.deinit();
-            if (tbg_new) |*t| t.deinit();
         }
 
         if (need_swg) swg_new = try Tensor.zeros(self.allocator, &weight_shape);
         if (need_twg) twg_new = try Tensor.zeros(self.allocator, &weight_shape);
-        if (need_sbg) sbg_new = try Tensor.zeros(self.allocator, &bias_shape);
-        if (need_tbg) tbg_new = try Tensor.zeros(self.allocator, &bias_shape);
 
         if (swg_new) |t| self.s_weight_grad = t;
         if (twg_new) |t| self.t_weight_grad = t;
-        if (sbg_new) |t| self.s_bias_grad = t;
-        if (tbg_new) |t| self.t_bias_grad = t;
 
         swg_new = null;
         twg_new = null;
-        sbg_new = null;
-        tbg_new = null;
     }
 
     fn zeroGradients(self: *LayerCore) void {
         if (self.s_weight_grad) |*g| zeroTensor(g);
         if (self.t_weight_grad) |*g| zeroTensor(g);
-        if (self.s_bias_grad) |*g| zeroTensor(g);
-        if (self.t_bias_grad) |*g| zeroTensor(g);
     }
 
     fn validatePair(self: *const LayerCore, a: *const Tensor, b: *const Tensor) !usize {
@@ -269,10 +238,11 @@ const LayerCore = struct {
 
     fn computeTranslationRow(self: *const LayerCore, input_row: []const f32, out_row: []f32) void {
         const dim = self.dim;
+        const dim1 = dim + 1;
         var d: usize = 0;
         while (d < dim) : (d += 1) {
-            var sum: f32 = self.t_bias.data[d];
-            const w_row = self.t_weight.data[d * dim .. d * dim + dim];
+            var sum: f32 = self.t_weight.data[d * dim1 + dim];
+            const w_row = self.t_weight.data[d * dim1 .. d * dim1 + dim];
             var j: usize = 0;
             while (j < dim) : (j += 1) sum += w_row[j] * input_row[j];
             out_row[d] = sum;
@@ -281,10 +251,11 @@ const LayerCore = struct {
 
     fn computeScaleRow(self: *const LayerCore, input_row: []const f32, out_row: []f32) void {
         const dim = self.dim;
+        const dim1 = dim + 1;
         var d: usize = 0;
         while (d < dim) : (d += 1) {
-            var sum: f32 = self.s_bias.data[d];
-            const w_row = self.s_weight.data[d * dim .. d * dim + dim];
+            var sum: f32 = self.s_weight.data[d * dim1 + dim];
+            const w_row = self.s_weight.data[d * dim1 .. d * dim1 + dim];
             var j: usize = 0;
             while (j < dim) : (j += 1) sum += w_row[j] * input_row[j];
             const clipped = if (sum < self.clip_min) self.clip_min else if (sum > self.clip_max) self.clip_max else sum;
@@ -351,6 +322,7 @@ const LayerCore = struct {
         grad_scale: f32,
     ) !void {
         const dim = self.dim;
+        const dim1 = dim + 1;
         if (!std.math.isFinite(grad_scale)) return error.NonFinite;
         if (y1_row.len != dim or y2_row.len != dim) return error.ShapeMismatch;
         if (dy1_row.len != dim or dy2_row.len != dim) return error.ShapeMismatch;
@@ -363,7 +335,7 @@ const LayerCore = struct {
             var d: usize = 0;
             while (d < dim) : (d += 1) {
                 const dy2_val = dy2_row[d];
-                const t_row = self.t_weight.data[d * dim .. d * dim + dim];
+                const t_row = self.t_weight.data[d * dim1 .. d * dim1 + dim];
                 var j: usize = 0;
                 while (j < dim) : (j += 1) dy1_total[j] += t_row[j] * dy2_val;
             }
@@ -374,20 +346,16 @@ const LayerCore = struct {
             while (d < dim) : (d += 1) {
                 const dyv = dy2_row[d] * grad_scale;
                 var j: usize = 0;
-                while (j < dim) : (j += 1) twg.data[d * dim + j] += dyv * y1_row[j];
+                while (j < dim) : (j += 1) twg.data[d * dim1 + j] += dyv * y1_row[j];
+                twg.data[d * dim1 + dim] += dyv;
             }
-        }
-
-        if (self.t_bias_grad) |*tbg| {
-            var d: usize = 0;
-            while (d < dim) : (d += 1) tbg.data[d] += dy2_row[d] * grad_scale;
         }
 
         {
             var d: usize = 0;
             while (d < dim) : (d += 1) {
-                var trans_sum: f32 = self.t_bias.data[d];
-                const t_row = self.t_weight.data[d * dim .. d * dim + dim];
+                var trans_sum: f32 = self.t_weight.data[d * dim1 + dim];
+                const t_row = self.t_weight.data[d * dim1 .. d * dim1 + dim];
                 var j: usize = 0;
                 while (j < dim) : (j += 1) trans_sum += t_row[j] * y1_row[j];
                 x2_row_out[d] = y2_row[d] - trans_sum;
@@ -397,8 +365,8 @@ const LayerCore = struct {
         {
             var d2: usize = 0;
             while (d2 < dim) : (d2 += 1) {
-                var pre_sum: f32 = self.s_bias.data[d2];
-                const s_row = self.s_weight.data[d2 * dim .. d2 * dim + dim];
+                var pre_sum: f32 = self.s_weight.data[d2 * dim1 + dim];
+                const s_row = self.s_weight.data[d2 * dim1 .. d2 * dim1 + dim];
                 var j2: usize = 0;
                 while (j2 < dim) : (j2 += 1) pre_sum += s_row[j2] * x2_row_out[j2];
 
@@ -416,13 +384,9 @@ const LayerCore = struct {
             while (d3 < dim) : (d3 += 1) {
                 const dsv = ds[d3] * grad_scale;
                 var j3: usize = 0;
-                while (j3 < dim) : (j3 += 1) swg.data[d3 * dim + j3] += dsv * x2_row_out[j3];
+                while (j3 < dim) : (j3 += 1) swg.data[d3 * dim1 + j3] += dsv * x2_row_out[j3];
+                swg.data[d3 * dim1 + dim] += dsv;
             }
-        }
-
-        if (self.s_bias_grad) |*sbg| {
-            var d4: usize = 0;
-            while (d4 < dim) : (d4 += 1) sbg.data[d4] += ds[d4] * grad_scale;
         }
 
         @memcpy(dx2_row_out, dy2_row);
@@ -430,7 +394,7 @@ const LayerCore = struct {
             var d5: usize = 0;
             while (d5 < dim) : (d5 += 1) {
                 const ds_val = ds[d5];
-                const s_row = self.s_weight.data[d5 * dim .. d5 * dim + dim];
+                const s_row = self.s_weight.data[d5 * dim1 .. d5 * dim1 + dim];
                 var j4: usize = 0;
                 while (j4 < dim) : (j4 += 1) dx2_row_out[j4] += s_row[j4] * ds_val;
             }
@@ -790,10 +754,8 @@ fn validateModelMetadata(core: *const RSFCore) !void {
         const layer = &core.layers[i];
         if (layer.dim != core.dim) return error.InvalidModelState;
         if (layer.clip_min != core.cfg.clip_min or layer.clip_max != core.cfg.clip_max or layer.grad_mean != core.cfg.grad_mean) return error.InvalidConfig;
-        try validateTensor2DShape(&layer.s_weight, core.dim, core.dim);
-        try validateTensor2DShape(&layer.t_weight, core.dim, core.dim);
-        try validateTensor2DShape(&layer.s_bias, 1, core.dim);
-        try validateTensor2DShape(&layer.t_bias, 1, core.dim);
+        try validateTensor2DShape(&layer.s_weight, core.dim, core.dim + 1);
+        try validateTensor2DShape(&layer.t_weight, core.dim, core.dim + 1);
     }
 }
 
@@ -1037,35 +999,22 @@ fn validateF16Convertible(data: []const f32) !void {
     }
 }
 
-fn uploadLayerToAccel(core: *RSFCore, layer: *const LayerCore, ga: *accel.RSFAccelerator, f16_buf: []f16, bias_f16: []f16) !void {
-    const dim_sq = try checkedMul(core.dim, core.dim);
+fn uploadLayerToAccel(core: *RSFCore, layer: *const LayerCore, ga: *accel.RSFAccelerator, f16_buf: []f16) !void {
+    const dim_sq = try checkedMul(core.dim, core.dim + 1);
     if (f16_buf.len < dim_sq) return error.DataLengthMismatch;
-    if (bias_f16.len < core.dim) return error.DataLengthMismatch;
 
-    try validateTensor2DShape(&layer.s_weight, core.dim, core.dim);
-    try validateTensor2DShape(&layer.t_weight, core.dim, core.dim);
-    try validateTensor2DShape(&layer.s_bias, 1, core.dim);
-    try validateTensor2DShape(&layer.t_bias, 1, core.dim);
+    try validateTensor2DShape(&layer.s_weight, core.dim, core.dim + 1);
+    try validateTensor2DShape(&layer.t_weight, core.dim, core.dim + 1);
     try validateF16Convertible(layer.s_weight.data);
     try validateF16Convertible(layer.t_weight.data);
-    try validateF16Convertible(layer.s_bias.data);
-    try validateF16Convertible(layer.t_bias.data);
 
     var i: usize = 0;
     while (i < dim_sq) : (i += 1) f16_buf[i] = @floatCast(layer.s_weight.data[i]);
-    try ga.setLayerWeightsS(0, f16_buf[0..dim_sq], core.dim, core.dim);
+    try ga.setLayerWeightsS(0, f16_buf[0..dim_sq], core.dim, core.dim + 1);
 
     i = 0;
     while (i < dim_sq) : (i += 1) f16_buf[i] = @floatCast(layer.t_weight.data[i]);
-    try ga.setLayerWeightsT(0, f16_buf[0..dim_sq], core.dim, core.dim);
-
-    i = 0;
-    while (i < core.dim) : (i += 1) bias_f16[i] = @floatCast(layer.s_bias.data[i]);
-    try ga.setLayerSBias(0, bias_f16[0..core.dim], core.dim);
-
-    i = 0;
-    while (i < core.dim) : (i += 1) bias_f16[i] = @floatCast(layer.t_bias.data[i]);
-    try ga.setLayerTBias(0, bias_f16[0..core.dim], core.dim);
+    try ga.setLayerWeightsT(0, f16_buf[0..dim_sq], core.dim, core.dim + 1);
 }
 
 fn syncAllLayersGPU(core: *RSFCore) !void {
@@ -1076,17 +1025,13 @@ fn syncAllLayersGPU(core: *RSFCore) !void {
     try validateModelMetadata(core);
     if (!modelGPUCompatible(core)) return error.GPUUnsupportedConfiguration;
 
-    const dim_sq = try checkedMul(core.dim, core.dim);
+    const dim_sq = try checkedMul(core.dim, core.dim + 1);
 
     for (core.layers) |*layer| {
         try ensureFiniteSlice(layer.s_weight.data);
         try ensureFiniteSlice(layer.t_weight.data);
-        try ensureFiniteSlice(layer.s_bias.data);
-        try ensureFiniteSlice(layer.t_bias.data);
         try validateF16Convertible(layer.s_weight.data);
         try validateF16Convertible(layer.t_weight.data);
-        try validateF16Convertible(layer.s_bias.data);
-        try validateF16Convertible(layer.t_bias.data);
     }
 
     const local_f16 = try core.allocator.alloc(f16, dim_sq);
@@ -1099,12 +1044,8 @@ fn syncAllLayersGPU(core: *RSFCore) !void {
 
     try staged_accel.setClipRange(@floatCast(core.cfg.clip_min), @floatCast(core.cfg.clip_max));
 
-    {
-        const bias_f16 = try core.allocator.alloc(f16, core.dim);
-        defer core.allocator.free(bias_f16);
-        for (core.layers) |*layer| {
-            try uploadLayerToAccel(core, layer, &staged_accel, local_f16, bias_f16);
-        }
+    for (core.layers) |*layer| {
+        try uploadLayerToAccel(core, layer, &staged_accel, local_f16);
     }
 
     if (core.gpu_accel) |*ga| ga.deinit();
@@ -1153,7 +1094,7 @@ fn tryForwardGPU(core: *RSFCore, x: *Tensor) !bool {
             return false;
         }
         const f16_buf = core.f16_buf.?;
-        const dim_sq = checkedMul(core.dim, core.dim) catch {
+        const dim_sq = checkedMul(core.dim, core.dim + 1) catch {
             disableGPU(core);
             return false;
         };
@@ -1162,19 +1103,13 @@ fn tryForwardGPU(core: *RSFCore, x: *Tensor) !bool {
             return false;
         }
 
-        const bias_f16 = core.allocator.alloc(f16, core.dim) catch {
-            disableGPU(core);
-            return false;
-        };
-        defer core.allocator.free(bias_f16);
-
         var working = tensorClone(allocator, x) catch {
             disableGPU(core);
             return false;
         };
 
         for (core.layers) |*layer| {
-            uploadLayerToAccel(core, layer, ga, f16_buf, bias_f16) catch {
+            uploadLayerToAccel(core, layer, ga, f16_buf) catch {
                 working.deinit();
                 disableGPU(core);
                 return false;
@@ -1210,8 +1145,6 @@ const SavedLayerSnapshot = struct {
     grad_mean: bool,
     s_weight: Tensor,
     t_weight: Tensor,
-    s_bias: Tensor,
-    t_bias: Tensor,
 };
 
 const SavedModelSnapshot = struct {
@@ -1227,8 +1160,6 @@ const SavedModelSnapshot = struct {
         for (layers) |*layer| {
             layer.s_weight.deinit();
             layer.t_weight.deinit();
-            layer.s_bias.deinit();
-            layer.t_bias.deinit();
         }
         if (layers.len != 0) self.allocator.free(layers);
     }
@@ -1247,8 +1178,6 @@ fn snapshotModelForSave(allocator: Allocator, core: *const RSFCore) !SavedModelS
         while (i < initialized) : (i += 1) {
             layers[i].s_weight.deinit();
             layers[i].t_weight.deinit();
-            layers[i].s_bias.deinit();
-            layers[i].t_bias.deinit();
         }
     }
 
@@ -1258,16 +1187,10 @@ fn snapshotModelForSave(allocator: Allocator, core: *const RSFCore) !SavedModelS
         try validateClipRange(layer.clip_min, layer.clip_max);
         try ensureFiniteSlice(layer.s_weight.data);
         try ensureFiniteSlice(layer.t_weight.data);
-        try ensureFiniteSlice(layer.s_bias.data);
-        try ensureFiniteSlice(layer.t_bias.data);
 
         var sw = try tensorClone(allocator, &layer.s_weight);
         errdefer sw.deinit();
-        var tw = try tensorClone(allocator, &layer.t_weight);
-        errdefer tw.deinit();
-        var sb = try tensorClone(allocator, &layer.s_bias);
-        errdefer sb.deinit();
-        const tb = try tensorClone(allocator, &layer.t_bias);
+        const tw = try tensorClone(allocator, &layer.t_weight);
 
         layers[i] = .{
             .clip_min = layer.clip_min,
@@ -1275,8 +1198,6 @@ fn snapshotModelForSave(allocator: Allocator, core: *const RSFCore) !SavedModelS
             .grad_mean = layer.grad_mean,
             .s_weight = sw,
             .t_weight = tw,
-            .s_bias = sb,
-            .t_bias = tb,
         };
         initialized += 1;
     }
@@ -1301,7 +1222,7 @@ pub const RSF = struct {
     pub fn initWithConfig(allocator: Allocator, dim: usize, num_layers: usize, cfg: RSFConfig) !RSF {
         try validateModelConfigValues(dim, num_layers, cfg);
 
-        _ = try checkedMul(dim, dim);
+        _ = try checkedMul(dim, dim + 1);
         _ = try checkedMul(dim, 2);
 
         const core = try allocator.create(RSFCore);
@@ -1514,7 +1435,7 @@ pub const RSF = struct {
         core.rwlock.unlockShared();
         defer snapshot.deinit();
 
-        try writeSnapshotVersion4ToPath(&snapshot, path, allocator);
+        try writeSnapshotVersion5ToPath(&snapshot, path, allocator);
     }
 
     pub fn load(allocator: Allocator, path: []const u8) !RSF {
@@ -1546,7 +1467,7 @@ pub const RSF = struct {
 
         const num_layers = try checkedCastU64ToUsize(num_layers_u64);
         const dim = try checkedCastU64ToUsize(dim_u64);
-        _ = try checkedMul(dim, dim);
+        _ = try checkedMul(dim, dim + 1);
         _ = try checkedMul(dim, 2);
 
         var hasher = std.hash.Crc32.init();
@@ -1634,38 +1555,24 @@ pub const RSF = struct {
             crcUpdateU32LE(&hasher, layer_clip_max_bits);
             crcUpdateU8(&hasher, if (layer_grad_mean) @as(u8, 1) else @as(u8, 0));
 
-            var s_w_new = try readTensorData(allocator, r, dim, dim);
+            var s_w_new = try readTensorData(allocator, r, dim, dim + 1);
             errdefer s_w_new.deinit();
-            var t_w_new = try readTensorData(allocator, r, dim, dim);
+            var t_w_new = try readTensorData(allocator, r, dim, dim + 1);
             errdefer t_w_new.deinit();
-            var s_b_new = try readTensorData(allocator, r, 1, dim);
-            errdefer s_b_new.deinit();
-            var t_b_new = try readTensorData(allocator, r, 1, dim);
-            errdefer t_b_new.deinit();
 
-            try validateTensor2DShape(&s_w_new, dim, dim);
-            try validateTensor2DShape(&t_w_new, dim, dim);
-            try validateTensor2DShape(&s_b_new, 1, dim);
-            try validateTensor2DShape(&t_b_new, 1, dim);
+            try validateTensor2DShape(&s_w_new, dim, dim + 1);
+            try validateTensor2DShape(&t_w_new, dim, dim + 1);
             try ensureFiniteSlice(s_w_new.data);
             try ensureFiniteSlice(t_w_new.data);
-            try ensureFiniteSlice(s_b_new.data);
-            try ensureFiniteSlice(t_b_new.data);
 
             hashTensorDataVersion4(&hasher, &s_w_new);
             hashTensorDataVersion4(&hasher, &t_w_new);
-            hashTensorDataVersion4(&hasher, &s_b_new);
-            hashTensorDataVersion4(&hasher, &t_b_new);
 
             core.layers[i] = .{
                 .s_weight = s_w_new,
                 .t_weight = t_w_new,
-                .s_bias = s_b_new,
-                .t_bias = t_b_new,
                 .s_weight_grad = null,
                 .t_weight_grad = null,
-                .s_bias_grad = null,
-                .t_bias_grad = null,
                 .dim = dim,
                 .allocator = allocator,
                 .clip_min = layer_clip_min,
@@ -1722,8 +1629,6 @@ pub const RSF = struct {
         while (i < layer_count1) : (i += 1) {
             if (!(try tensorAllCloseEq(&core1.layers[i].s_weight, &core2.layers[i].s_weight, abs_tol, rel_tol))) return false;
             if (!(try tensorAllCloseEq(&core1.layers[i].t_weight, &core2.layers[i].t_weight, abs_tol, rel_tol))) return false;
-            if (!(try tensorAllCloseEq(&core1.layers[i].s_bias, &core2.layers[i].s_bias, abs_tol, rel_tol))) return false;
-            if (!(try tensorAllCloseEq(&core1.layers[i].t_bias, &core2.layers[i].t_bias, abs_tol, rel_tol))) return false;
             if (core1.layers[i].clip_min != core2.layers[i].clip_min or core1.layers[i].clip_max != core2.layers[i].clip_max or core1.layers[i].grad_mean != core2.layers[i].grad_mean) return false;
         }
 
@@ -1869,7 +1774,7 @@ fn createUniqueTempFile(dir: *std.fs.Dir, allocator: Allocator, base_name: []con
     return error.TempFileCollision;
 }
 
-fn writeSnapshotVersion4ToPath(snapshot: *const SavedModelSnapshot, path: []const u8, allocator: Allocator) !void {
+fn writeSnapshotVersion5ToPath(snapshot: *const SavedModelSnapshot, path: []const u8, allocator: Allocator) !void {
     if (snapshot.num_layers != snapshot.layers.len) return error.InvalidModelState;
     try validateModelConfigValues(snapshot.dim, snapshot.num_layers, snapshot.cfg);
     if (path.len == 0) return error.InvalidPath;
@@ -1938,8 +1843,6 @@ fn writeSnapshotVersion4ToPath(snapshot: *const SavedModelSnapshot, path: []cons
 
         try writeTensorDataVersion4(w, &hasher, &layer.s_weight);
         try writeTensorDataVersion4(w, &hasher, &layer.t_weight);
-        try writeTensorDataVersion4(w, &hasher, &layer.s_bias);
-        try writeTensorDataVersion4(w, &hasher, &layer.t_bias);
     }
 
     try w.writeInt(u32, hasher.final(), .little);

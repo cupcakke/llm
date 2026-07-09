@@ -274,8 +274,6 @@ pub fn exportModel(model: *ModelFormat, path: []const u8) !void {
         for (rc.layers) |layer| {
             try layer.s_weight.save(rsf_writer);
             try layer.t_weight.save(rsf_writer);
-            try layer.s_bias.save(rsf_writer);
-            try layer.t_bias.save(rsf_writer);
         }
 
         const rsf_data = try rsf_buf.toOwnedSlice();
@@ -504,13 +502,9 @@ pub fn importModel(path: []const u8, allocator: Allocator) !ModelFormat {
         while (l < num_layers) : (l += 1) {
             lrc.layers[l].s_weight.deinit();
             lrc.layers[l].t_weight.deinit();
-            lrc.layers[l].s_bias.deinit();
-            lrc.layers[l].t_bias.deinit();
 
             lrc.layers[l].s_weight = try Tensor.load(allocator, rsf_reader);
             lrc.layers[l].t_weight = try Tensor.load(allocator, rsf_reader);
-            lrc.layers[l].s_bias = try Tensor.load(allocator, rsf_reader);
-            lrc.layers[l].t_bias = try Tensor.load(allocator, rsf_reader);
         }
 
         if (rsf_comp_reader.bytes_read != rsf_len) return ModelError.CorruptedData;

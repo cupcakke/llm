@@ -31,7 +31,7 @@ pub const TrainerConfig = struct {
     learning_rate: f32 = 0.001,
     momentum: f32 = 0.0,
     max_line_size: usize = 10 * 1024 * 1024,
-    checkpoint_version: u32 = 6,
+    checkpoint_version: u32 = 7,
 };
 
 pub const DistributedTrainerFuthark = struct {
@@ -415,12 +415,8 @@ pub const DistributedTrainerFuthark = struct {
         const kinds = [_]accel.WeightKind{
             .weights_s,
             .weights_t,
-            .s_bias,
-            .t_bias,
             .velocity_s,
             .velocity_t,
-            .velocity_sb,
-            .velocity_tb,
         };
 
         var li: usize = 0;
@@ -438,9 +434,10 @@ pub const DistributedTrainerFuthark = struct {
             return error.InvalidWeightsShape;
         }
         const half: usize = self.model_dim / 2;
-        const expected_len = try std.math.mul(usize, half, half);
+        const cols = half + 1;
+        const expected_len = try std.math.mul(usize, half, cols);
         if (base.len != expected_len) {
-            std.debug.print("[Rank {d}] applyDeltaToLayer: base.len={d}, expected half*half={d}, model_dim={d}\n", .{ self.coordinator.rank, base.len, expected_len, self.model_dim });
+            std.debug.print("[Rank {d}] applyDeltaToLayer: base.len={d}, expected half*(half+1)={d}, model_dim={d}\n", .{ self.coordinator.rank, base.len, expected_len, self.model_dim });
             return error.InvalidWeightsShape;
         }
 
@@ -453,32 +450,8 @@ pub const DistributedTrainerFuthark = struct {
         }
 
         switch (which) {
-            .s => try self.accelerator.setLayerWeightsS(layer_idx, merged, half, half),
-            .t => try self.accelerator.setLayerWeightsT(layer_idx, merged, half, half),
-        }
-    }
-
-    fn applyBiasDeltaToLayer(self: *DistributedTrainerFuthark, layer_idx: usize, base: []const f16, delta: []const f16, which: enum { s, t }) !void {
-        if (base.len != delta.len) {
-            return error.InvalidWeightsShape;
-        }
-        const half: usize = self.model_dim / 2;
-        if (base.len != half) {
-            std.debug.print("[Rank {d}] applyBiasDeltaToLayer: base.len={d}, expected half={d}, model_dim={d}\n", .{ self.coordinator.rank, base.len, half, self.model_dim });
-            return error.InvalidWeightsShape;
-        }
-
-        var merged = try self.allocator.alloc(f16, base.len);
-        defer self.allocator.free(merged);
-
-        for (base, delta, 0..) |base_value, delta_value, idx| {
-            const merged_value = @as(f32, @floatCast(base_value)) + @as(f32, @floatCast(delta_value));
-            merged[idx] = @floatCast(merged_value);
-        }
-
-        switch (which) {
-            .s => try self.accelerator.setLayerSBias(layer_idx, merged, half),
-            .t => try self.accelerator.setLayerTBias(layer_idx, merged, half),
+            .s => try self.accelerator.setLayerWeightsS(layer_idx, merged, half, cols),
+            .t => try self.accelerator.setLayerWeightsT(layer_idx, merged, half, cols),
         }
     }
 
@@ -903,37 +876,25 @@ pub const DistributedTrainerFuthark = struct {
         const Snapshots = struct {
             ws: [][]f16,
             wt: [][]f16,
-            sb: [][]f16,
-            tb: [][]f16,
         };
 
         var snap = Snapshots{
             .ws = try self.allocator.alloc([]f16, self.num_layers),
             .wt = try self.allocator.alloc([]f16, self.num_layers),
-            .sb = try self.allocator.alloc([]f16, self.num_layers),
-            .tb = try self.allocator.alloc([]f16, self.num_layers),
         };
         defer {
             for (snap.ws) |p| if (p.len > 0) self.allocator.free(p);
             for (snap.wt) |p| if (p.len > 0) self.allocator.free(p);
-            for (snap.sb) |p| if (p.len > 0) self.allocator.free(p);
-            for (snap.tb) |p| if (p.len > 0) self.allocator.free(p);
             self.allocator.free(snap.ws);
             self.allocator.free(snap.wt);
-            self.allocator.free(snap.sb);
-            self.allocator.free(snap.tb);
         }
         for (snap.ws) |*p| p.* = &.{};
         for (snap.wt) |*p| p.* = &.{};
-        for (snap.sb) |*p| p.* = &.{};
-        for (snap.tb) |*p| p.* = &.{};
 
         var li_before: usize = 0;
         while (li_before < self.num_layers) : (li_before += 1) {
             snap.ws[li_before] = try self.readLayerMatrix(li_before, .weights_s);
             snap.wt[li_before] = try self.readLayerMatrix(li_before, .weights_t);
-            snap.sb[li_before] = try self.readLayerMatrix(li_before, .s_bias);
-            snap.tb[li_before] = try self.readLayerMatrix(li_before, .t_bias);
         }
 
         const loss_f16 = try self.accelerator.trainingStep(&inputs, &targets, lr_f16, mom_f16);
@@ -945,15 +906,9 @@ pub const DistributedTrainerFuthark = struct {
             defer self.allocator.free(ws_after);
             const wt_after = try self.readLayerMatrix(li_after, .weights_t);
             defer self.allocator.free(wt_after);
-            const sb_after = try self.readLayerMatrix(li_after, .s_bias);
-            defer self.allocator.free(sb_after);
-            const tb_after = try self.readLayerMatrix(li_after, .t_bias);
-            defer self.allocator.free(tb_after);
 
             if (ws_after.len != snap.ws[li_after].len or
-                wt_after.len != snap.wt[li_after].len or
-                sb_after.len != snap.sb[li_after].len or
-                tb_after.len != snap.tb[li_after].len)
+                wt_after.len != snap.wt[li_after].len)
             {
                 return error.InvalidWeightsShape;
             }
@@ -964,22 +919,12 @@ pub const DistributedTrainerFuthark = struct {
             for (wt_after, snap.wt[li_after]) |*v, b| {
                 v.* = @floatCast(@as(f32, @floatCast(v.*)) - @as(f32, @floatCast(b)));
             }
-            for (sb_after, snap.sb[li_after]) |*v, b| {
-                v.* = @floatCast(@as(f32, @floatCast(v.*)) - @as(f32, @floatCast(b)));
-            }
-            for (tb_after, snap.tb[li_after]) |*v, b| {
-                v.* = @floatCast(@as(f32, @floatCast(v.*)) - @as(f32, @floatCast(b)));
-            }
 
             try self.averageDeltaInPlace(ws_after);
             try self.averageDeltaInPlace(wt_after);
-            try self.averageDeltaInPlace(sb_after);
-            try self.averageDeltaInPlace(tb_after);
 
             try self.applyDeltaToLayer(li_after, snap.ws[li_after], ws_after, .s);
             try self.applyDeltaToLayer(li_after, snap.wt[li_after], wt_after, .t);
-            try self.applyBiasDeltaToLayer(li_after, snap.sb[li_after], sb_after, .s);
-            try self.applyBiasDeltaToLayer(li_after, snap.tb[li_after], tb_after, .t);
         }
         try self.accelerator.sync();
 
@@ -1036,14 +981,6 @@ pub const DistributedTrainerFuthark = struct {
             defer self.allocator.free(weights_t_vals);
             for (weights_t_vals) |w| try writeF32(writer, @floatCast(w));
 
-            const s_bias_vals = try self.readLayerMatrix(li_save, .s_bias);
-            defer self.allocator.free(s_bias_vals);
-            for (s_bias_vals) |b| try writeF32(writer, @floatCast(b));
-
-            const t_bias_vals = try self.readLayerMatrix(li_save, .t_bias);
-            defer self.allocator.free(t_bias_vals);
-            for (t_bias_vals) |b| try writeF32(writer, @floatCast(b));
-
             const vel_s_vals = try self.readLayerMatrix(li_save, .velocity_s);
             defer self.allocator.free(vel_s_vals);
             for (vel_s_vals) |v| try writeF32(writer, @floatCast(v));
@@ -1051,14 +988,6 @@ pub const DistributedTrainerFuthark = struct {
             const vel_t_vals = try self.readLayerMatrix(li_save, .velocity_t);
             defer self.allocator.free(vel_t_vals);
             for (vel_t_vals) |v| try writeF32(writer, @floatCast(v));
-
-            const vel_sb_vals = try self.readLayerMatrix(li_save, .velocity_sb);
-            defer self.allocator.free(vel_sb_vals);
-            for (vel_sb_vals) |v| try writeF32(writer, @floatCast(v));
-
-            const vel_tb_vals = try self.readLayerMatrix(li_save, .velocity_tb);
-            defer self.allocator.free(vel_tb_vals);
-            for (vel_tb_vals) |v| try writeF32(writer, @floatCast(v));
         }
 
         try writeF32(writer, @as(f32, @floatCast(self.accelerator.clip_min)));
@@ -1161,7 +1090,8 @@ pub const DistributedTrainerFuthark = struct {
         self.global_step = saved_global_step;
 
         const half: usize = self.model_dim / 2;
-        const weight_count = try std.math.mul(usize, half, half);
+        const cols = half + 1;
+        const weight_count = try std.math.mul(usize, half, cols);
 
         var li_load: usize = 0;
         while (li_load < self.num_layers) : (li_load += 1) {
@@ -1181,27 +1111,8 @@ pub const DistributedTrainerFuthark = struct {
                 w.* = @floatCast(v);
             }
 
-            try self.accelerator.setLayerWeightsS(li_load, s_weights, half, half);
-            try self.accelerator.setLayerWeightsT(li_load, t_weights, half, half);
-
-            const s_bias_data = try self.allocator.alloc(f16, half);
-            defer self.allocator.free(s_bias_data);
-            for (s_bias_data) |*b| {
-                const v = try readF32(reader);
-                if (!std.math.isFinite(v)) return error.InvalidWeightValue;
-                b.* = @floatCast(v);
-            }
-
-            const t_bias_data = try self.allocator.alloc(f16, half);
-            defer self.allocator.free(t_bias_data);
-            for (t_bias_data) |*b| {
-                const v = try readF32(reader);
-                if (!std.math.isFinite(v)) return error.InvalidWeightValue;
-                b.* = @floatCast(v);
-            }
-
-            try self.accelerator.setLayerSBias(li_load, s_bias_data, half);
-            try self.accelerator.setLayerTBias(li_load, t_bias_data, half);
+            try self.accelerator.setLayerWeightsS(li_load, s_weights, half, cols);
+            try self.accelerator.setLayerWeightsT(li_load, t_weights, half, cols);
 
             const vel_s = try self.allocator.alloc(f16, weight_count);
             defer self.allocator.free(vel_s);
@@ -1219,26 +1130,8 @@ pub const DistributedTrainerFuthark = struct {
                 w.* = @floatCast(v);
             }
 
-            const vel_sb = try self.allocator.alloc(f16, half);
-            defer self.allocator.free(vel_sb);
-            for (vel_sb) |*w| {
-                const v = try readF32(reader);
-                if (!std.math.isFinite(v)) return error.InvalidWeightValue;
-                w.* = @floatCast(v);
-            }
-
-            const vel_tb = try self.allocator.alloc(f16, half);
-            defer self.allocator.free(vel_tb);
-            for (vel_tb) |*w| {
-                const v = try readF32(reader);
-                if (!std.math.isFinite(v)) return error.InvalidWeightValue;
-                w.* = @floatCast(v);
-            }
-
-            try self.accelerator.setLayerVelocityS(li_load, vel_s, half, half);
-            try self.accelerator.setLayerVelocityT(li_load, vel_t, half, half);
-            try self.accelerator.setLayerVelocitySB(li_load, vel_sb, half);
-            try self.accelerator.setLayerVelocityTB(li_load, vel_tb, half);
+            try self.accelerator.setLayerVelocityS(li_load, vel_s, half, cols);
+            try self.accelerator.setLayerVelocityT(li_load, vel_t, half, cols);
         }
 
         const clip_min_f32 = try readF32(reader);
@@ -1360,8 +1253,6 @@ pub const DistributedTrainerFuthark = struct {
                 re_act[fi],
                 self.accelerator.layers[fi].weights_s.arr,
                 self.accelerator.layers[fi].weights_t.arr,
-                self.accelerator.layers[fi].s_bias.arr,
-                self.accelerator.layers[fi].t_bias.arr,
                 cmin,
                 cmax,
             );
@@ -1411,7 +1302,7 @@ pub const DistributedTrainerFuthark = struct {
                 return;
             }
 
-            var tup: ?*futhark.struct_futhark_opaque_tup5_grad_full = null;
+            var tup: ?*futhark.struct_futhark_opaque_tup3_grad_full = null;
             _ = futhark.futhark_entry_batch_gradients_full(
                 fctx,
                 &tup,
@@ -1419,8 +1310,6 @@ pub const DistributedTrainerFuthark = struct {
                 grad,
                 self.accelerator.layers[lb - 1].weights_s.arr,
                 self.accelerator.layers[lb - 1].weights_t.arr,
-                self.accelerator.layers[lb - 1].s_bias.arr,
-                self.accelerator.layers[lb - 1].t_bias.arr,
                 cmin,
                 cmax,
             );
@@ -1430,19 +1319,13 @@ pub const DistributedTrainerFuthark = struct {
             if (tup) |t| {
                 var gws: ?*futhark.struct_futhark_f16_2d = null;
                 var gwt: ?*futhark.struct_futhark_f16_2d = null;
-                var gsb: ?*futhark.struct_futhark_f16_1d = null;
-                var gtb: ?*futhark.struct_futhark_f16_1d = null;
                 var gin: ?*futhark.struct_futhark_f16_3d = null;
-                _ = futhark.futhark_project_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16_0(fctx, &gws, t);
-                _ = futhark.futhark_project_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16_1(fctx, &gwt, t);
-                _ = futhark.futhark_project_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16_2(fctx, &gsb, t);
-                _ = futhark.futhark_project_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16_3(fctx, &gtb, t);
-                _ = futhark.futhark_project_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16_4(fctx, &gin, t);
-                _ = futhark.futhark_free_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16(fctx, t);
+                _ = futhark.futhark_project_opaque_tup3_arr2d_f16_arr2d_f16_arr3d_f16_0(fctx, &gws, t);
+                _ = futhark.futhark_project_opaque_tup3_arr2d_f16_arr2d_f16_arr3d_f16_1(fctx, &gwt, t);
+                _ = futhark.futhark_project_opaque_tup3_arr2d_f16_arr2d_f16_arr3d_f16_2(fctx, &gin, t);
+                _ = futhark.futhark_free_opaque_tup3_arr2d_f16_arr2d_f16_arr3d_f16(fctx, t);
                 if (gws != null) _ = futhark.futhark_free_f16_2d(fctx, gws);
                 if (gwt != null) _ = futhark.futhark_free_f16_2d(fctx, gwt);
-                if (gsb != null) _ = futhark.futhark_free_f16_1d(fctx, gsb);
-                if (gtb != null) _ = futhark.futhark_free_f16_1d(fctx, gtb);
                 grad = gin;
             }
         }
