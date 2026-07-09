@@ -3,7 +3,6 @@ const builtin = @import("builtin");
 
 const mem = std.mem;
 const Allocator = mem.Allocator;
-const Alignment = std.mem.Alignment;
 
 const Mutex = std.Thread.Mutex;
 const CondVar = std.Thread.Condition;
@@ -68,8 +67,8 @@ fn runtimeAlignedAlloc(allocator: Allocator, comptime T: type, n: usize, alignme
     if (!isPow2(alignment)) return error.InvalidAlignment;
     if (n == 0) return emptySlice(T);
     const byte_count = try mulChecked(n, @sizeOf(T));
-    const a = Alignment.fromByteUnits(alignment);
-    const raw = allocator.rawAlloc(byte_count, a, @returnAddress()) orelse return error.OutOfMemory;
+    const log2a: u8 = @intCast(std.math.log2_int(usize, alignment));
+    const raw = allocator.rawAlloc(byte_count, log2a, @returnAddress()) orelse return error.OutOfMemory;
     const typed: [*]T = @ptrCast(@alignCast(raw));
     return typed[0..n];
 }
@@ -83,7 +82,7 @@ pub const Arena = struct {
     pub fn init(allocator: Allocator, size: usize) !Arena {
         if (size == 0) return error.InvalidSize;
         const aligned_size = mem.alignForward(usize, size, PageSize);
-        const buffer = try allocator.alignedAlloc(u8, Alignment.fromByteUnits(PageSize), aligned_size);
+        const buffer = try allocator.alignedAlloc(u8, PageSize, aligned_size);
         return .{
             .buffer = buffer,
             .offset = 0,
@@ -170,7 +169,7 @@ pub const ArenaAllocator = struct {
     pub fn init(parent_allocator: Allocator, buffer_size: usize) ArenaAllocator {
         return .{
             .parent_allocator = parent_allocator,
-            .buffers = .empty,
+            .buffers = std.ArrayList([]u8).init(parent_allocator),
             .current_buffer = emptyU8Slice(),
             .pos = 0,
             .buffer_size = if (buffer_size == 0) 4096 else buffer_size,
@@ -190,7 +189,7 @@ pub const ArenaAllocator = struct {
         for (self.buffers.items) |buf| {
             self.parent_allocator.free(buf);
         }
-        self.buffers.deinit(self.parent_allocator);
+        self.buffers.deinit();
         self.current_buffer = emptyU8Slice();
         self.pos = 0;
     }
@@ -203,7 +202,7 @@ pub const ArenaAllocator = struct {
             secureZeroMemory(buf.ptr, buf.len);
             self.parent_allocator.free(buf);
         }
-        self.buffers.deinit(self.parent_allocator);
+        self.buffers.deinit();
         self.current_buffer = emptyU8Slice();
         self.pos = 0;
     }
@@ -214,7 +213,6 @@ pub const ArenaAllocator = struct {
             .vtable = &.{
                 .alloc = arenaAlloc,
                 .resize = arenaResize,
-                .remap = arenaRemap,
                 .free = arenaFree,
             },
         };
@@ -224,7 +222,7 @@ pub const ArenaAllocator = struct {
         const need = addChecked(len, alignment - 1) catch return null;
         const new_size = if (self.buffer_size > need) self.buffer_size else need;
         const new_buf = self.parent_allocator.alloc(u8, new_size) catch return null;
-        self.buffers.append(self.parent_allocator, new_buf) catch {
+        self.buffers.append(new_buf) catch {
             self.parent_allocator.free(new_buf);
             return null;
         };
@@ -239,12 +237,12 @@ pub const ArenaAllocator = struct {
         return aligned - base;
     }
 
-    fn arenaAlloc(ctx: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
+    fn arenaAlloc(ctx: *anyopaque, len: usize, log2_align: u8, ret_addr: usize) ?[*]u8 {
         _ = ret_addr;
         const self: *ArenaAllocator = @ptrCast(@alignCast(ctx));
         if (len == 0) return emptyU8Slice().ptr;
 
-        const align_bytes: usize = alignment.toByteUnits();
+        const align_bytes: usize = @as(usize, 1) << @as(u6, @intCast(log2_align));
 
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -267,10 +265,10 @@ pub const ArenaAllocator = struct {
         return p;
     }
 
-    fn arenaResize(ctx: *anyopaque, buf: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) bool {
+    fn arenaResize(ctx: *anyopaque, buf: []u8, log2_align: u8, new_len: usize, ret_addr: usize) bool {
         _ = ret_addr;
         const self: *ArenaAllocator = @ptrCast(@alignCast(ctx));
-        const align_bytes: usize = alignment.toByteUnits();
+        const align_bytes: usize = @as(usize, 1) << @as(u6, @intCast(log2_align));
 
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -298,15 +296,11 @@ pub const ArenaAllocator = struct {
         return true;
     }
 
-    fn arenaRemap(ctx: *anyopaque, buf: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-        if (arenaResize(ctx, buf, alignment, new_len, ret_addr)) return buf.ptr;
-        return null;
-    }
 
-    fn arenaFree(ctx: *anyopaque, buf: []u8, alignment: Alignment, ret_addr: usize) void {
+    fn arenaFree(ctx: *anyopaque, buf: []u8, log2_align: u8, ret_addr: usize) void {
         _ = ctx;
         _ = buf;
-        _ = alignment;
+        _ = log2_align;
         _ = ret_addr;
     }
 };
@@ -483,42 +477,33 @@ pub const SlabAllocator = struct {
             .vtable = &.{
                 .alloc = slabVtableAlloc,
                 .resize = slabVtableResize,
-                .remap = slabVtableRemap,
                 .free = slabVtableFree,
             },
         };
     }
 
-    fn slabVtableAlloc(ctx: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
+    fn slabVtableAlloc(ctx: *anyopaque, len: usize, log2_align: u8, ret_addr: usize) ?[*]u8 {
         _ = ret_addr;
         const self: *SlabAllocator = @ptrCast(@alignCast(ctx));
-        const align_bytes = alignment.toByteUnits();
+        const align_bytes = @as(usize, 1) << @as(u6, @intCast(log2_align));
         if (align_bytes > self.block_size) return null;
         const slice = self.alloc(len) orelse return null;
         if (!mem.isAligned(@intFromPtr(slice.ptr), align_bytes)) return null;
         return slice.ptr;
     }
 
-    fn slabVtableResize(ctx: *anyopaque, buf: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) bool {
+    fn slabVtableResize(ctx: *anyopaque, buf: []u8, log2_align: u8, new_len: usize, ret_addr: usize) bool {
         _ = ctx;
         _ = buf;
-        _ = alignment;
+        _ = log2_align;
         _ = new_len;
         _ = ret_addr;
         return false;
     }
 
-    fn slabVtableRemap(ctx: *anyopaque, buf: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-        _ = ctx;
-        _ = buf;
-        _ = alignment;
-        _ = new_len;
-        _ = ret_addr;
-        return null;
-    }
 
-    fn slabVtableFree(ctx: *anyopaque, buf: []u8, alignment: Alignment, ret_addr: usize) void {
-        _ = alignment;
+    fn slabVtableFree(ctx: *anyopaque, buf: []u8, log2_align: u8, ret_addr: usize) void {
+        _ = log2_align;
         _ = ret_addr;
         const self: *SlabAllocator = @ptrCast(@alignCast(ctx));
         self.free(buf) catch {};
@@ -636,7 +621,7 @@ pub const PoolAllocator = struct {
         const bitmap_words = (num_blocks + 63) / 64;
         while (initialized < num_pools) : (initialized += 1) {
             const total = try mulChecked(actual_block_size, num_blocks);
-            pools[initialized].buffer = try parent_allocator.alignedAlloc(u8, Alignment.fromByteUnits(@alignOf(?usize)), total);
+            pools[initialized].buffer = try parent_allocator.alignedAlloc(u8, @alignOf(?usize), total);
             pools[initialized].allocated_bitmap = parent_allocator.alloc(u64, bitmap_words) catch |err| {
                 parent_allocator.free(pools[initialized].buffer);
                 return err;
@@ -728,42 +713,33 @@ pub const PoolAllocator = struct {
             .vtable = &.{
                 .alloc = poolVtableAlloc,
                 .resize = poolVtableResize,
-                .remap = poolVtableRemap,
                 .free = poolVtableFree,
             },
         };
     }
 
-    fn poolVtableAlloc(ctx: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
+    fn poolVtableAlloc(ctx: *anyopaque, len: usize, log2_align: u8, ret_addr: usize) ?[*]u8 {
         _ = ret_addr;
         const self: *PoolAllocator = @ptrCast(@alignCast(ctx));
-        const align_bytes = alignment.toByteUnits();
+        const align_bytes = @as(usize, 1) << @as(u6, @intCast(log2_align));
         if (align_bytes > @alignOf(?usize)) return null;
         const slice = self.alloc(len) orelse return null;
         if (!mem.isAligned(@intFromPtr(slice.ptr), align_bytes)) return null;
         return slice.ptr;
     }
 
-    fn poolVtableResize(ctx: *anyopaque, buf: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) bool {
+    fn poolVtableResize(ctx: *anyopaque, buf: []u8, log2_align: u8, new_len: usize, ret_addr: usize) bool {
         _ = ctx;
         _ = buf;
-        _ = alignment;
+        _ = log2_align;
         _ = new_len;
         _ = ret_addr;
         return false;
     }
 
-    fn poolVtableRemap(ctx: *anyopaque, buf: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-        _ = ctx;
-        _ = buf;
-        _ = alignment;
-        _ = new_len;
-        _ = ret_addr;
-        return null;
-    }
 
-    fn poolVtableFree(ctx: *anyopaque, buf: []u8, alignment: Alignment, ret_addr: usize) void {
-        _ = alignment;
+    fn poolVtableFree(ctx: *anyopaque, buf: []u8, log2_align: u8, ret_addr: usize) void {
+        _ = log2_align;
         _ = ret_addr;
         const self: *PoolAllocator = @ptrCast(@alignCast(ctx));
         self.free(buf) catch {};
@@ -847,7 +823,7 @@ pub const BuddyAllocator = struct {
         @memset(tree, .free);
         errdefer parent_allocator.free(tree);
 
-        const memory = try parent_allocator.alignedAlloc(u8, Alignment.fromByteUnits(PageSize), capacity);
+        const memory = try parent_allocator.alignedAlloc(u8, PageSize, capacity);
         errdefer parent_allocator.free(memory);
 
         return .{
@@ -1025,40 +1001,31 @@ pub const BuddyAllocator = struct {
             .vtable = &.{
                 .alloc = buddyVtableAlloc,
                 .resize = buddyVtableResize,
-                .remap = buddyVtableRemap,
                 .free = buddyVtableFree,
             },
         };
     }
 
-    fn buddyVtableAlloc(ctx: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
+    fn buddyVtableAlloc(ctx: *anyopaque, len: usize, log2_align: u8, ret_addr: usize) ?[*]u8 {
         _ = ret_addr;
         const self: *BuddyAllocator = @ptrCast(@alignCast(ctx));
-        const align_bytes = alignment.toByteUnits();
+        const align_bytes = @as(usize, 1) << @as(u6, @intCast(log2_align));
         const slice = self.allocAlignedInternal(len, align_bytes) catch return null;
         return slice.ptr;
     }
 
-    fn buddyVtableResize(ctx: *anyopaque, buf: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) bool {
+    fn buddyVtableResize(ctx: *anyopaque, buf: []u8, log2_align: u8, new_len: usize, ret_addr: usize) bool {
         _ = ctx;
         _ = buf;
-        _ = alignment;
+        _ = log2_align;
         _ = new_len;
         _ = ret_addr;
         return false;
     }
 
-    fn buddyVtableRemap(ctx: *anyopaque, buf: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-        _ = ctx;
-        _ = buf;
-        _ = alignment;
-        _ = new_len;
-        _ = ret_addr;
-        return null;
-    }
 
-    fn buddyVtableFree(ctx: *anyopaque, buf: []u8, alignment: Alignment, ret_addr: usize) void {
-        _ = alignment;
+    fn buddyVtableFree(ctx: *anyopaque, buf: []u8, log2_align: u8, ret_addr: usize) void {
+        _ = log2_align;
         _ = ret_addr;
         const self: *BuddyAllocator = @ptrCast(@alignCast(ctx));
         self.free(buf) catch {};
@@ -1216,33 +1183,33 @@ pub const LockFreeQueue = struct {
     }
 
     pub fn enqueue(self: *LockFreeQueue, item: *anyopaque) bool {
-        var pos = @atomicLoad(usize, &self.tail, .relaxed);
+        var pos = @atomicLoad(usize, &self.tail, .monotonic);
         while (true) {
             const cell = &self.buffer[pos & self.mask];
             const seq = @atomicLoad(usize, &cell.sequence, .acquire);
             const diff: isize = @as(isize, @bitCast(seq)) -% @as(isize, @bitCast(pos));
             if (diff == 0) {
                 cell.data = @intFromPtr(item);
-                if (@cmpxchgWeak(usize, &self.tail, pos, pos + 1, .relaxed, .relaxed) == null) {
+                if (@cmpxchgWeak(usize, &self.tail, pos, pos + 1, .monotonic, .monotonic) == null) {
                     @atomicStore(usize, &cell.sequence, pos + 1, .release);
                     return true;
                 }
             } else if (diff < 0) {
                 return false;
             } else {
-                pos = @atomicLoad(usize, &self.tail, .relaxed);
+                pos = @atomicLoad(usize, &self.tail, .monotonic);
             }
         }
     }
 
     pub fn dequeue(self: *LockFreeQueue) ?*anyopaque {
-        var pos = @atomicLoad(usize, &self.head, .relaxed);
+        var pos = @atomicLoad(usize, &self.head, .monotonic);
         while (true) {
             const cell = &self.buffer[pos & self.mask];
             const seq = @atomicLoad(usize, &cell.sequence, .acquire);
             const diff: isize = @as(isize, @bitCast(seq)) -% @as(isize, @bitCast(pos + 1));
             if (diff == 0) {
-                if (@cmpxchgWeak(usize, &self.head, pos, pos + 1, .relaxed, .relaxed) == null) {
+                if (@cmpxchgWeak(usize, &self.head, pos, pos + 1, .monotonic, .monotonic) == null) {
                     const data = cell.data;
                     @atomicStore(usize, &cell.sequence, pos + self.mask + 1, .release);
                     return @ptrFromInt(data);
@@ -1250,7 +1217,7 @@ pub const LockFreeQueue = struct {
             } else if (diff < 0) {
                 return null;
             } else {
-                pos = @atomicLoad(usize, &self.head, .relaxed);
+                pos = @atomicLoad(usize, &self.head, .monotonic);
             }
         }
     }
@@ -1364,7 +1331,7 @@ pub const PageAllocator = struct {
     pub fn init(allocator: Allocator, num_pages: usize) !PageAllocator {
         if (num_pages == 0) return error.InvalidSize;
         const total = try mulChecked(num_pages, PageSize);
-        const pages = try allocator.alignedAlloc(u8, Alignment.fromByteUnits(PageSize), total);
+        const pages = try allocator.alignedAlloc(u8, PageSize, total);
         const bitmap_words = (num_pages + 63) / 64;
         const bitmap = try allocator.alloc(u64, bitmap_words);
         @memset(bitmap, 0);
@@ -1860,12 +1827,12 @@ pub fn intersectMemory(allocator: Allocator, a: []const u8, b: []const u8) ![]u8
     var set_a: [256]bool = [_]bool{false} ** 256;
     var added: [256]bool = [_]bool{false} ** 256;
     for (a) |c| set_a[c] = true;
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(allocator);
+    var list = std.ArrayList(u8).init(allocator);
+    defer list.deinit();
     for (b) |c| {
         if (set_a[c] and !added[c]) {
             added[c] = true;
-            try list.append(allocator, c);
+            try list.append(c);
         }
     }
     return try list.toOwnedSlice(allocator);
@@ -1896,12 +1863,12 @@ pub fn differenceMemory(allocator: Allocator, a: []const u8, b: []const u8) ![]u
     var set_b: [256]bool = [_]bool{false} ** 256;
     var added: [256]bool = [_]bool{false} ** 256;
     for (b) |c| set_b[c] = true;
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(allocator);
+    var list = std.ArrayList(u8).init(allocator);
+    defer list.deinit();
     for (a) |c| {
         if (!set_b[c] and !added[c]) {
             added[c] = true;
-            try list.append(allocator, c);
+            try list.append(c);
         }
     }
     return try list.toOwnedSlice(allocator);
@@ -1995,43 +1962,33 @@ pub const TrackingAllocator = struct {
             .vtable = &.{
                 .alloc = trackingAlloc,
                 .resize = trackingResize,
-                .remap = trackingRemap,
                 .free = trackingFree,
             },
         };
     }
 
-    fn trackingAlloc(ctx: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
+    fn trackingAlloc(ctx: *anyopaque, len: usize, log2_align: u8, ret_addr: usize) ?[*]u8 {
         const self: *TrackingAllocator = @ptrCast(@alignCast(ctx));
-        const ptr = self.parent.vtable.alloc(self.parent.ptr, len, alignment, ret_addr);
+        const ptr = self.parent.vtable.alloc(self.parent.ptr, len, log2_align, ret_addr);
         if (ptr != null) trackAllocation(len);
         return ptr;
     }
 
-    fn trackingResize(ctx: *anyopaque, buf: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) bool {
+    fn trackingResize(ctx: *anyopaque, buf: []u8, log2_align: u8, new_len: usize, ret_addr: usize) bool {
         const self: *TrackingAllocator = @ptrCast(@alignCast(ctx));
         const old_len = buf.len;
-        const ok = self.parent.vtable.resize(self.parent.ptr, buf, alignment, new_len, ret_addr);
+        const ok = self.parent.vtable.resize(self.parent.ptr, buf, log2_align, new_len, ret_addr);
         if (ok) {
             if (new_len > old_len) trackAllocation(new_len - old_len) else trackFree(old_len - new_len);
         }
         return ok;
     }
 
-    fn trackingRemap(ctx: *anyopaque, buf: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-        const self: *TrackingAllocator = @ptrCast(@alignCast(ctx));
-        const old_len = buf.len;
-        const result = self.parent.vtable.remap(self.parent.ptr, buf, alignment, new_len, ret_addr);
-        if (result != null) {
-            if (new_len > old_len) trackAllocation(new_len - old_len) else trackFree(old_len - new_len);
-        }
-        return result;
-    }
 
-    fn trackingFree(ctx: *anyopaque, buf: []u8, alignment: Alignment, ret_addr: usize) void {
+    fn trackingFree(ctx: *anyopaque, buf: []u8, log2_align: u8, ret_addr: usize) void {
         const self: *TrackingAllocator = @ptrCast(@alignCast(ctx));
         trackFree(buf.len);
-        self.parent.vtable.free(self.parent.ptr, buf, alignment, ret_addr);
+        self.parent.vtable.free(self.parent.ptr, buf, log2_align, ret_addr);
     }
 };
 
@@ -2215,17 +2172,17 @@ pub fn trimExcessCapacity(allocator: Allocator, buf: []u8, used: usize) ![]u8 {
 }
 
 pub fn splitMemory(allocator: Allocator, data: []const u8, delim: u8) ![][]const u8 {
-    var parts: std.ArrayList([]const u8) = .empty;
-    defer parts.deinit(allocator);
+    var parts = std.ArrayList([]const u8).init(allocator);
+    defer parts.deinit();
     var start: usize = 0;
     var i: usize = 0;
     while (i < data.len) : (i += 1) {
         if (data[i] == delim) {
-            try parts.append(allocator, data[start..i]);
+            try parts.append(data[start..i]);
             start = i + 1;
         }
     }
-    try parts.append(allocator, data[start..]);
+    try parts.append(data[start..]);
     return try parts.toOwnedSlice(allocator);
 }
 
@@ -2263,15 +2220,15 @@ pub fn semaphorePost(sem: *Semaphore) void {
 }
 
 pub fn compressMemory(data: []const u8, allocator: Allocator) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
+    var out = std.ArrayList(u8).init(allocator);
+    defer out.deinit();
     var i: usize = 0;
     while (i < data.len) {
         const value = data[i];
         var run: usize = 1;
         while (i + run < data.len and data[i + run] == value and run < 255) : (run += 1) {}
-        try out.append(allocator, @intCast(run));
-        try out.append(allocator, value);
+        try out.append(@intCast(run));
+        try out.append(value);
         i += run;
     }
     return try out.toOwnedSlice(allocator);
@@ -2279,8 +2236,8 @@ pub fn compressMemory(data: []const u8, allocator: Allocator) ![]u8 {
 
 pub fn decompressMemory(data: []const u8, allocator: Allocator) ![]u8 {
     if (data.len % 2 != 0) return error.InvalidData;
-    var out: std.ArrayList(u8) = .empty;
-    defer out.deinit(allocator);
+    var out = std.ArrayList(u8).init(allocator);
+    defer out.deinit();
     var i: usize = 0;
     while (i < data.len) : (i += 2) {
         const run = data[i];

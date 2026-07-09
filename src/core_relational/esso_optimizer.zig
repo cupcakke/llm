@@ -121,7 +121,7 @@ pub const SymmetryGroup = enum(u8) {
             .rotation_180 => 2,
             .rotation_270 => 4,
             .translation => 1,
-            .custom_rotation => 0,
+            .custom_rotation => 2,
         };
     }
 

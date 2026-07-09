@@ -520,7 +520,8 @@ pub const RelationalQuantumLogic = struct {
             old_t1.im * c0_prob + old_t0.im * c1_prob,
         );
 
-        const entanglement_inc = @min(1.0, 2.0 * @sqrt(c0_prob * c1_prob));
+        const superposition_term = 2.0 * @sqrt(c0_prob * c1_prob);
+        const entanglement_inc = @min(1.0, @max(superposition_term, c1_prob));
         self.states.items[control_idx].entanglement_degree = @min(1.0, self.states.items[control_idx].entanglement_degree + entanglement_inc);
         target.entanglement_degree = @min(1.0, target.entanglement_degree + entanglement_inc);
 
