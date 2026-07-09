@@ -2,6 +2,8 @@ JAIDE ÁTTEKINTÉS
 
 A JAIDE egy foundation nagy nyelvi modell, amely az 5. gyök architektúra paradigmán alapul. Ez a modell eltér a hagyományos Perceptron, CNN, RNN és Transformer architektúráktól azáltal, hogy Visszafordítható Szórt Folyam (RSF) vermet alkalmaz. Ez a tervezés biztosítja, hogy minden neurális réteg bijektív és invertálható legyen, lehetővé téve az O(dim) memória komplexitást a visszaterjesztés során, mivel az aktivációk menet közben rekonstruálhatók ahelyett, hogy gyorsítótárban tárolnák őket.
 
+A JAIDE az első ténylegesen létező, működő architektúra, amelynek definiáló primitívje nem a σ(W·x + b) alak, és nem is annak valamely variánsa. A RSF réteg alapművelete egy bijektív, invertálható kereszt-affin csatolás (skála- és fordításkomponensekkel, determinisztikus szórt permutációkkal), nem pedig egy nemlineáris aktivációval lezárt affin transzformáció.
+
 A rendszer ezt a visszafordítható neurális gerincet egy magas szintű kognitív réteggel integrálja, amelyet Mag Relációs Rétegnek neveznek, és amely kvantum-inspirált relációs gráfokat és fraktál dinamikát alkalmaz az érveléshez.
 
 Az 5. gyök paradigma: Visszafordítható Szórt Folyam (RSF)
@@ -495,8 +497,8 @@ Adatfolyam összefoglalója
 | :--- | :--- | :--- | :--- |
 | Bemenet | MGT | Morfológiai dekompozíció | src/processor/rsf.zig:150 |
 | Keverés | OFTB | SIMD pillangó transzformáció | src/processor/oftb.zig:21-45 |
-| Csatolás | LayerCore | Affin skála/eltolás (S, T) | src/processor/rsf.zig:134-143 |
-| Tárolás | SAVE_VERSION | CRC32-validált v4 I/O | src/processor/rsf.zig:24 |
+| Csatolás | LayerCore | Affin skála/eltolás (S, T) homogén koordinátákban | src/processor/rsf.zig:134-143 |
+| Tárolás | SAVE_VERSION | CRC32-validált v5 I/O | src/processor/rsf.zig:24 |
 
 ---
 
@@ -517,7 +519,7 @@ A réteg a következő transzformációt valósítja meg:
 3. Kombinálás: y2 = x2 ⊙ s + t, míg y1 = x1 változatlan marad.
 4. Keverés: A kimenetek az OFTB.forwardInPlace-en keresztül mennek a keresztdimenziós információáramlás biztosításához.
 
-A LayerCore struktúra kezeli a súlyokat (Ws, Wt) és az eltolásokat (bs, bb) ezekhez a transzformációkhoz. Exp-vágást alkalmaz (clip_min és clip_max által meghatározva) a numerikus instabilitás megelőzéséhez az exponenciális skálázási tényezőben.
+A LayerCore struktúra kezeli a súlymátrixokat (Ws, Wt) ezekhez a transzformációkhoz. Az eltolások (bias) homogén koordináták révén be vannak olvasztva a súlymátrixokba: minden súlymátrix alakja [dim × (dim+1)], ahol az utolsó oszlop tárolja az abszorbeált eltolást. Így nincsenek külön eltolás-tenzorok, a rétegenkénti paraméterszám változatlan (dim² + dim = dim × (dim+1)). Exp-vágást alkalmaz (clip_min és clip_max által meghatározva) a numerikus instabilitás megelőzéséhez az exponenciális skálázási tényezőben.
 
 | Komponens | Kód entitás | Leírás |
 | :--- | :--- | :--- |
@@ -547,7 +549,7 @@ A nagy párhuzamosságú következtetés és tanítás támogatásához az RSF h
 
 4. Bináris szerializáció (v4) és CRC32
 
-Az RSF rendszer robusztus bináris formátumot alkalmaz a modell perzisztenciájához, amelyet a SAVE_VERSION = 4 azonosít. A szerializáció biztosítja az adatok integritását különböző hardver architektúrákon.
+Az RSF rendszer robusztus bináris formátumot alkalmaz a modell perzisztenciájához, amelyet a SAVE_VERSION = 5 azonosít. A szerializáció biztosítja az adatok integritását különböző hardver architektúrákon.
 
 Szerializációs elrendezés
 
@@ -555,7 +557,7 @@ A formátum szigorú sorrendet követ:
 
 1. Fejléc: Mágikus bájtok és SAVE_VERSION.
 2. Metaadat: dim, num_layers, clip_min, clip_max.
-3. Réteg adatok: Minden réteghez az s_weight, t_weight, s_bias és t_bias tenzorok kerülnek írásra.
+3. Réteg adatok: Minden réteghez az s_weight és t_weight tenzorok kerülnek írásra, mindkettő [dim × (dim+1)] alakban, ahol az utolsó oszlop az abszorbeált eltolást tartalmazza.
 4. Integritás: CRC32 ellenőrző összeg kerül kiszámításra a teljes adatfolyamon a sérülés észleléséhez az I/O során.
 
 5. Validáció és korlátok
@@ -1645,7 +1647,7 @@ A batch_compute_loss függvény Átlagos Négyzetes Hibát (MSE) számít f32 po
 
 3. SFD súly frissítés
 
-A súlyok a Spektrális Fisher Diagonalizáló (SFD) logika segítségével frissülnek. Az sfd_update_half és sfd_update_bias függvények impulzus alapú frissítéseket valósítanak meg. A WeightKind enum azonosítja, hogy melyik paraméter készlet kerül frissítésre (Skála súlyok, Fordítás súlyok vagy a megfelelő eltolások és sebességek).
+A súlyok a Spektrális Fisher Diagonalizáló (SFD) logika segítségével frissülnek. Az sfd_update_mat függvény impulzus alapú frissítéseket valósít meg a kiterjesztett [dim × (dim+1)] súlymátrixokon (az eltolás az utolsó oszlopban van beolvasztva, így külön eltolás-frissítésre nincs szükség). A WeightKind enum azonosítja, hogy melyik paraméter készlet kerül frissítésre (Skála súlyok, Fordítás súlyok vagy a megfelelő sebességek).
 
 GPU műveletek és CUDA kötések
 
@@ -1891,7 +1893,7 @@ A tréner verzionált ellenőrzőpontokat támogat a tanítás folytonosságána
 
 Mentés/betöltés mechanizmus
 
-- Verzió követés: A TrainerConfig meghatároz egy checkpoint_version-t (jelenleg v6) a kompatibilitás fenntartásához.
+- Verzió követés: A TrainerConfig meghatároz egy checkpoint_version-t (jelenleg v7) a kompatibilitás fenntartásához.
 - Szerializáció: Az RSF súlyok, beágyazási mátrixok és az NSIR gráf állapota bináris formátumba kerülnek szerializálva.
 - 0-ás rang felelőssége: Általában csak a gyökér rang (0-ás rang) végzi a tényleges fájl I/O-t az ellenőrzőpontokhoz az írási versengés elkerülése érdekében, amelyet egy broadcast követ a többi ranghoz.
 

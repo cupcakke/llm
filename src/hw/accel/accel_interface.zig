@@ -30,12 +30,8 @@ pub const AccelError = error{
 pub const WeightKind = enum {
     weights_s,
     weights_t,
-    s_bias,
-    t_bias,
     velocity_s,
     velocity_t,
-    velocity_sb,
-    velocity_tb,
 };
 
 pub const FutharkContext = struct {
@@ -488,20 +484,12 @@ pub const FutharkArray1DF32 = struct {
 pub const RSFLayer = struct {
     weights_s: FutharkArray2DF16,
     weights_t: FutharkArray2DF16,
-    s_bias: FutharkArray1DF16,
-    t_bias: FutharkArray1DF16,
     velocity_s: FutharkArray2DF16,
     velocity_t: FutharkArray2DF16,
-    velocity_sb: FutharkArray1DF16,
-    velocity_tb: FutharkArray1DF16,
 
     pub fn free(self: *RSFLayer, ctx: *FutharkContext) void {
-        self.velocity_tb.free(ctx);
-        self.velocity_sb.free(ctx);
         self.velocity_t.free(ctx);
         self.velocity_s.free(ctx);
-        self.t_bias.free(ctx);
-        self.s_bias.free(ctx);
         self.weights_t.free(ctx);
         self.weights_s.free(ctx);
     }
@@ -538,7 +526,7 @@ pub const RSFAccelerator = struct {
         var layers = allocator.alloc(RSFLayer, num_layers) catch return AccelError.AllocationFailed;
         errdefer allocator.free(layers);
 
-        const total: usize = half * half;
+        const total: usize = half * (half + 1);
         const ws_buf = allocator.alloc(f16, total) catch return AccelError.AllocationFailed;
         defer allocator.free(ws_buf);
         const wt_buf = allocator.alloc(f16, total) catch return AccelError.AllocationFailed;
@@ -565,25 +553,24 @@ pub const RSFAccelerator = struct {
                 const r = rnd.floatNorm(f32) * init_stddev;
                 v.* = @floatCast(r);
             }
+            {
+                var d: usize = 0;
+                while (d < half) : (d += 1) {
+                    ws_buf[d * (half + 1) + half] = @as(f16, 0.0);
+                    wt_buf[d * (half + 1) + half] = @as(f16, 0.0);
+                }
+            }
 
-            const weights_s = try FutharkArray2DF16.newFromFlat(&ctx, ws_buf, half, half);
-            const weights_t = try FutharkArray2DF16.newFromFlat(&ctx, wt_buf, half, half);
-            const s_bias = try FutharkArray1DF16.newZeros(&ctx, half, allocator);
-            const t_bias = try FutharkArray1DF16.newZeros(&ctx, half, allocator);
-            const velocity_s = try FutharkArray2DF16.newZeros(&ctx, half, half, allocator);
-            const velocity_t = try FutharkArray2DF16.newZeros(&ctx, half, half, allocator);
-            const velocity_sb = try FutharkArray1DF16.newZeros(&ctx, half, allocator);
-            const velocity_tb = try FutharkArray1DF16.newZeros(&ctx, half, allocator);
+            const weights_s = try FutharkArray2DF16.newFromFlat(&ctx, ws_buf, half, half + 1);
+            const weights_t = try FutharkArray2DF16.newFromFlat(&ctx, wt_buf, half, half + 1);
+            const velocity_s = try FutharkArray2DF16.newZeros(&ctx, half, half + 1, allocator);
+            const velocity_t = try FutharkArray2DF16.newZeros(&ctx, half, half + 1, allocator);
 
             layers[layer_idx] = .{
                 .weights_s = weights_s,
                 .weights_t = weights_t,
-                .s_bias = s_bias,
-                .t_bias = t_bias,
                 .velocity_s = velocity_s,
                 .velocity_t = velocity_t,
-                .velocity_sb = velocity_sb,
-                .velocity_tb = velocity_tb,
             };
             layers_built += 1;
         }
@@ -630,7 +617,6 @@ pub const RSFAccelerator = struct {
         while (li < self.layers.len) : (li += 1) {
             const layer = &self.layers[li];
             if (layer.weights_s.arr == null or layer.weights_t.arr == null) return AccelError.NullPointer;
-            if (layer.s_bias.arr == null or layer.t_bias.arr == null) return AccelError.NullPointer;
 
             var next_arr: ?*futhark.struct_futhark_f16_2d = null;
             const result = futhark.futhark_entry_rsf_forward(
@@ -639,8 +625,6 @@ pub const RSFAccelerator = struct {
                 current_arr,
                 layer.weights_s.arr,
                 layer.weights_t.arr,
-                layer.s_bias.arr,
-                layer.t_bias.arr,
                 clip_min_bits,
                 clip_max_bits,
             );
@@ -701,7 +685,6 @@ pub const RSFAccelerator = struct {
         while (li < n_layers) : (li += 1) {
             const layer = &self.layers[li];
             if (layer.weights_s.arr == null or layer.weights_t.arr == null) return AccelError.NullPointer;
-            if (layer.s_bias.arr == null or layer.t_bias.arr == null) return AccelError.NullPointer;
 
             var rsf_out: ?*futhark.struct_futhark_f16_3d = null;
             const rc = futhark.futhark_entry_batch_forward(
@@ -710,8 +693,6 @@ pub const RSFAccelerator = struct {
                 current_act,
                 layer.weights_s.arr,
                 layer.weights_t.arr,
-                layer.s_bias.arr,
-                layer.t_bias.arr,
                 clip_min_bits,
                 clip_max_bits,
             );
@@ -788,7 +769,6 @@ pub const RSFAccelerator = struct {
 
             if (current_act == null or grad_out == null) return AccelError.NullPointer;
             if (layer.weights_s.arr == null or layer.weights_t.arr == null) return AccelError.NullPointer;
-            if (layer.s_bias.arr == null or layer.t_bias.arr == null) return AccelError.NullPointer;
 
             var rsf_out_reconstructed: ?*futhark.struct_futhark_f16_3d = null;
             const oftb_inv_rc = futhark.futhark_entry_batch_oftb_backward(
@@ -816,8 +796,6 @@ pub const RSFAccelerator = struct {
                 rsf_out_reconstructed,
                 layer.weights_s.arr,
                 layer.weights_t.arr,
-                layer.s_bias.arr,
-                layer.t_bias.arr,
                 clip_min_bits,
                 clip_max_bits,
             );
@@ -854,7 +832,7 @@ pub const RSFAccelerator = struct {
                 return AccelError.FutharkBackwardFailed;
             }
 
-            var grad_tup: ?*futhark.struct_futhark_opaque_tup5_grad_full = null;
+            var grad_tup: ?*futhark.struct_futhark_opaque_tup3_grad_full = null;
             const bg_rc = futhark.futhark_entry_batch_gradients_full(
                 self.ctx.ctx,
                 &grad_tup,
@@ -862,8 +840,6 @@ pub const RSFAccelerator = struct {
                 oftb_grad,
                 layer.weights_s.arr,
                 layer.weights_t.arr,
-                layer.s_bias.arr,
-                layer.t_bias.arr,
                 clip_min_bits,
                 clip_max_bits,
             );
@@ -883,24 +859,18 @@ pub const RSFAccelerator = struct {
 
             var grad_ws: ?*futhark.struct_futhark_f16_2d = null;
             var grad_wt: ?*futhark.struct_futhark_f16_2d = null;
-            var grad_sb: ?*futhark.struct_futhark_f16_1d = null;
-            var grad_tb: ?*futhark.struct_futhark_f16_1d = null;
             var grad_in: ?*futhark.struct_futhark_f16_3d = null;
 
-            const proj0 = futhark.futhark_project_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16_0(self.ctx.ctx, &grad_ws, grad_tup);
-            const proj1 = futhark.futhark_project_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16_1(self.ctx.ctx, &grad_wt, grad_tup);
-            const proj2 = futhark.futhark_project_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16_2(self.ctx.ctx, &grad_sb, grad_tup);
-            const proj3 = futhark.futhark_project_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16_3(self.ctx.ctx, &grad_tb, grad_tup);
-            const proj4 = futhark.futhark_project_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16_4(self.ctx.ctx, &grad_in, grad_tup);
-            _ = futhark.futhark_free_opaque_tup5_arr2d_f16_arr2d_f16_arr1d_f16_arr1d_f16_arr3d_f16(self.ctx.ctx, grad_tup);
+            const proj0 = futhark.futhark_project_opaque_tup3_arr2d_f16_arr2d_f16_arr3d_f16_0(self.ctx.ctx, &grad_ws, grad_tup);
+            const proj1 = futhark.futhark_project_opaque_tup3_arr2d_f16_arr2d_f16_arr3d_f16_1(self.ctx.ctx, &grad_wt, grad_tup);
+            const proj2 = futhark.futhark_project_opaque_tup3_arr2d_f16_arr2d_f16_arr3d_f16_2(self.ctx.ctx, &grad_in, grad_tup);
+            _ = futhark.futhark_free_opaque_tup3_arr2d_f16_arr2d_f16_arr3d_f16(self.ctx.ctx, grad_tup);
 
-            if (proj0 != 0 or proj1 != 0 or proj2 != 0 or proj3 != 0 or proj4 != 0 or
-                grad_ws == null or grad_wt == null or grad_sb == null or grad_tb == null or grad_in == null)
+            if (proj0 != 0 or proj1 != 0 or proj2 != 0 or
+                grad_ws == null or grad_wt == null or grad_in == null)
             {
                 if (grad_ws != null) _ = futhark.futhark_free_f16_2d(self.ctx.ctx, grad_ws);
                 if (grad_wt != null) _ = futhark.futhark_free_f16_2d(self.ctx.ctx, grad_wt);
-                if (grad_sb != null) _ = futhark.futhark_free_f16_1d(self.ctx.ctx, grad_sb);
-                if (grad_tb != null) _ = futhark.futhark_free_f16_1d(self.ctx.ctx, grad_tb);
                 if (grad_in != null) _ = futhark.futhark_free_f16_3d(self.ctx.ctx, grad_in);
                 if (layer_input_reconstructed) |inp| {
                     _ = futhark.futhark_free_f16_3d(self.ctx.ctx, inp);
@@ -917,14 +887,6 @@ pub const RSFAccelerator = struct {
                     _ = futhark.futhark_free_f16_2d(self.ctx.ctx, g);
                     grad_wt = null;
                 }
-                if (grad_sb) |g| {
-                    _ = futhark.futhark_free_f16_1d(self.ctx.ctx, g);
-                    grad_sb = null;
-                }
-                if (grad_tb) |g| {
-                    _ = futhark.futhark_free_f16_1d(self.ctx.ctx, g);
-                    grad_tb = null;
-                }
                 if (grad_in) |g| {
                     _ = futhark.futhark_free_f16_3d(self.ctx.ctx, g);
                     grad_in = null;
@@ -937,17 +899,11 @@ pub const RSFAccelerator = struct {
 
             try sfdUpdateMat(self, &layer.weights_s, &layer.velocity_s, grad_ws, lr_bits, momentum_bits);
             try sfdUpdateMat(self, &layer.weights_t, &layer.velocity_t, grad_wt, lr_bits, momentum_bits);
-            try sfdUpdateBias(self, &layer.s_bias, &layer.velocity_sb, grad_sb, lr_bits, momentum_bits);
-            try sfdUpdateBias(self, &layer.t_bias, &layer.velocity_tb, grad_tb, lr_bits, momentum_bits);
 
             _ = futhark.futhark_free_f16_2d(self.ctx.ctx, grad_ws);
             grad_ws = null;
             _ = futhark.futhark_free_f16_2d(self.ctx.ctx, grad_wt);
             grad_wt = null;
-            _ = futhark.futhark_free_f16_1d(self.ctx.ctx, grad_sb);
-            grad_sb = null;
-            _ = futhark.futhark_free_f16_1d(self.ctx.ctx, grad_tb);
-            grad_tb = null;
 
             grad_out = grad_in;
             grad_in = null;
@@ -983,7 +939,7 @@ pub const RSFAccelerator = struct {
     ) AccelError!void {
         if (weights.arr == null or velocity.arr == null) return AccelError.NullPointer;
         var out_tup: ?*futhark.struct_futhark_opaque_tup2_2d = null;
-        const rc = futhark.futhark_entry_sfd_update_half(
+        const rc = futhark.futhark_entry_sfd_update_mat(
             self.ctx.ctx,
             &out_tup,
             weights.arr,
@@ -994,7 +950,7 @@ pub const RSFAccelerator = struct {
         );
         if (rc != 0 or out_tup == null) {
             const err_str = futhark.futhark_context_get_error(self.ctx.ctx);
-            if (err_str) |s| std.debug.print("[Futhark sfd_update_half error] {s}\n", .{std.mem.span(s)});
+            if (err_str) |s| std.debug.print("[Futhark sfd_update_mat error] {s}\n", .{std.mem.span(s)});
             return AccelError.FutharkSFDUpdateFailed;
         }
         var new_w: ?*futhark.struct_futhark_f16_2d = null;
@@ -1009,44 +965,6 @@ pub const RSFAccelerator = struct {
         velocity.arr = new_v;
         _ = futhark.futhark_free_f16_2d(self.ctx.ctx, old_w);
         _ = futhark.futhark_free_f16_2d(self.ctx.ctx, old_v);
-    }
-
-    fn sfdUpdateBias(
-        self: *Self,
-        bias: *FutharkArray1DF16,
-        velocity: *FutharkArray1DF16,
-        gradients: ?*futhark.struct_futhark_f16_1d,
-        lr_bits: u16,
-        momentum_bits: u16,
-    ) AccelError!void {
-        if (bias.arr == null or velocity.arr == null) return AccelError.NullPointer;
-        var out_tup: ?*futhark.struct_futhark_opaque_tup2_1d = null;
-        const rc = futhark.futhark_entry_sfd_update_bias(
-            self.ctx.ctx,
-            &out_tup,
-            bias.arr,
-            gradients,
-            lr_bits,
-            momentum_bits,
-            velocity.arr,
-        );
-        if (rc != 0 or out_tup == null) {
-            const err_str = futhark.futhark_context_get_error(self.ctx.ctx);
-            if (err_str) |s| std.debug.print("[Futhark sfd_update_bias error] {s}\n", .{std.mem.span(s)});
-            return AccelError.FutharkSFDUpdateFailed;
-        }
-        var new_b: ?*futhark.struct_futhark_f16_1d = null;
-        var new_v: ?*futhark.struct_futhark_f16_1d = null;
-        _ = futhark.futhark_project_opaque_tup2_arr1d_f16_arr1d_f16_0(self.ctx.ctx, &new_b, out_tup);
-        _ = futhark.futhark_project_opaque_tup2_arr1d_f16_arr1d_f16_1(self.ctx.ctx, &new_v, out_tup);
-        _ = futhark.futhark_free_opaque_tup2_arr1d_f16_arr1d_f16(self.ctx.ctx, out_tup);
-        if (new_b == null or new_v == null) return AccelError.FutharkSFDUpdateFailed;
-        const old_b = bias.arr;
-        const old_v = velocity.arr;
-        bias.arr = new_b;
-        velocity.arr = new_v;
-        _ = futhark.futhark_free_f16_1d(self.ctx.ctx, old_b);
-        _ = futhark.futhark_free_f16_1d(self.ctx.ctx, old_v);
     }
 
     pub fn scaleWeights(self: *Self, scale_factor: f16) AccelError!void {
@@ -1119,22 +1037,6 @@ pub const RSFAccelerator = struct {
         layer.weights_t = try FutharkArray2DF16.newFromFlat(&self.ctx, data, rows, cols);
     }
 
-    pub fn setLayerSBias(self: *Self, layer_idx: usize, data: []const f16, length: usize) AccelError!void {
-        const layer = try self.layerPtr(layer_idx);
-        if (length == 0) return AccelError.InvalidDimensions;
-        if (data.len != length) return AccelError.InvalidDimensions;
-        layer.s_bias.free(&self.ctx);
-        layer.s_bias = try FutharkArray1DF16.newFromFlat(&self.ctx, data, length);
-    }
-
-    pub fn setLayerTBias(self: *Self, layer_idx: usize, data: []const f16, length: usize) AccelError!void {
-        const layer = try self.layerPtr(layer_idx);
-        if (length == 0) return AccelError.InvalidDimensions;
-        if (data.len != length) return AccelError.InvalidDimensions;
-        layer.t_bias.free(&self.ctx);
-        layer.t_bias = try FutharkArray1DF16.newFromFlat(&self.ctx, data, length);
-    }
-
     pub fn setLayerVelocityS(self: *Self, layer_idx: usize, data: []const f16, rows: usize, cols: usize) AccelError!void {
         const layer = try self.layerPtr(layer_idx);
         if (rows == 0 or cols == 0) return AccelError.InvalidDimensions;
@@ -1151,22 +1053,6 @@ pub const RSFAccelerator = struct {
         layer.velocity_t = try FutharkArray2DF16.newFromFlat(&self.ctx, data, rows, cols);
     }
 
-    pub fn setLayerVelocitySB(self: *Self, layer_idx: usize, data: []const f16, length: usize) AccelError!void {
-        const layer = try self.layerPtr(layer_idx);
-        if (length == 0) return AccelError.InvalidDimensions;
-        if (data.len != length) return AccelError.InvalidDimensions;
-        layer.velocity_sb.free(&self.ctx);
-        layer.velocity_sb = try FutharkArray1DF16.newFromFlat(&self.ctx, data, length);
-    }
-
-    pub fn setLayerVelocityTB(self: *Self, layer_idx: usize, data: []const f16, length: usize) AccelError!void {
-        const layer = try self.layerPtr(layer_idx);
-        if (length == 0) return AccelError.InvalidDimensions;
-        if (data.len != length) return AccelError.InvalidDimensions;
-        layer.velocity_tb.free(&self.ctx);
-        layer.velocity_tb = try FutharkArray1DF16.newFromFlat(&self.ctx, data, length);
-    }
-
     pub fn readLayerWeightsFlat(self: *Self, layer_idx: usize, kind: WeightKind, allocator: std.mem.Allocator) AccelError![]f16 {
         const layer = try self.layerPtr(layer_idx);
         return switch (kind) {
@@ -1174,10 +1060,6 @@ pub const RSFAccelerator = struct {
             .weights_t => readMatFlat(self, &layer.weights_t, allocator),
             .velocity_s => readMatFlat(self, &layer.velocity_s, allocator),
             .velocity_t => readMatFlat(self, &layer.velocity_t, allocator),
-            .s_bias => readBiasFlat(self, &layer.s_bias, allocator),
-            .t_bias => readBiasFlat(self, &layer.t_bias, allocator),
-            .velocity_sb => readBiasFlat(self, &layer.velocity_sb, allocator),
-            .velocity_tb => readBiasFlat(self, &layer.velocity_tb, allocator),
         };
     }
 
@@ -1190,14 +1072,10 @@ pub const RSFAccelerator = struct {
         const layer = try self.layerPtr(layer_idx);
         const half = self.model_dim / 2;
         return switch (kind) {
-            .weights_s => .{ .ptr = try self.ctx.getDataPointer(&layer.weights_s), .count = half * half },
-            .weights_t => .{ .ptr = try self.ctx.getDataPointer(&layer.weights_t), .count = half * half },
-            .velocity_s => .{ .ptr = try self.ctx.getDataPointer(&layer.velocity_s), .count = half * half },
-            .velocity_t => .{ .ptr = try self.ctx.getDataPointer(&layer.velocity_t), .count = half * half },
-            .s_bias => .{ .ptr = try get1DDevicePtr(&self.ctx, &layer.s_bias), .count = half },
-            .t_bias => .{ .ptr = try get1DDevicePtr(&self.ctx, &layer.t_bias), .count = half },
-            .velocity_sb => .{ .ptr = try get1DDevicePtr(&self.ctx, &layer.velocity_sb), .count = half },
-            .velocity_tb => .{ .ptr = try get1DDevicePtr(&self.ctx, &layer.velocity_tb), .count = half },
+            .weights_s => .{ .ptr = try self.ctx.getDataPointer(&layer.weights_s), .count = half * (half + 1) },
+            .weights_t => .{ .ptr = try self.ctx.getDataPointer(&layer.weights_t), .count = half * (half + 1) },
+            .velocity_s => .{ .ptr = try self.ctx.getDataPointer(&layer.velocity_s), .count = half * (half + 1) },
+            .velocity_t => .{ .ptr = try self.ctx.getDataPointer(&layer.velocity_t), .count = half * (half + 1) },
         };
     }
 
@@ -1208,28 +1086,19 @@ pub const RSFAccelerator = struct {
             allocator.free(rows);
         }
         const half = self.model_dim / 2;
+        const cols = half + 1;
         if (rows.len != half) return AccelError.InvalidDimensions;
-        const total = std.math.mul(usize, half, half) catch return AccelError.AllocationFailed;
+        const total = std.math.mul(usize, half, cols) catch return AccelError.AllocationFailed;
         var flat = allocator.alloc(f16, total) catch return AccelError.AllocationFailed;
         var idx: usize = 0;
         for (rows) |row| {
-            if (row.len != half) return AccelError.InvalidDimensions;
+            if (row.len != cols) return AccelError.InvalidDimensions;
             for (row) |v| {
                 flat[idx] = v;
                 idx += 1;
             }
         }
         return flat;
-    }
-
-    fn readBiasFlat(self: *Self, bias: *FutharkArray1DF16, allocator: std.mem.Allocator) AccelError![]f16 {
-        const vals = try bias.values1D(&self.ctx, allocator);
-        const half = self.model_dim / 2;
-        if (vals.len != half) {
-            allocator.free(vals);
-            return AccelError.InvalidDimensions;
-        }
-        return vals;
     }
 
     pub fn setClipRange(self: *Self, clip_min_val: f16, clip_max_val: f16) AccelError!void {
