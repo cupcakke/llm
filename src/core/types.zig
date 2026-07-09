@@ -1148,14 +1148,6 @@ pub const FluidGrid = struct {
     }
 };
 
-pub const NeuralLayer = struct {
-    weights: GenericTensor,
-    biases: GenericTensor,
-    activation: *const fn (f32) f32,
-};
-
-pub const NeuralNetwork = []NeuralLayer;
-
 pub const GeneticIndividual = struct {
     genome: []u8,
     fitness: FixedPoint32,

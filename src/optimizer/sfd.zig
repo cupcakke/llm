@@ -1462,66 +1462,6 @@ pub const B200MemoryManager = struct {
     }
 };
 
-pub const OpType = enum {
-    matmul,
-    add,
-    activation,
-    fused_gemm_bias_act,
-};
-
-pub const FusedKernel = struct {
-    operations: []OpType,
-    use_fp4: bool,
-    allocator: Allocator,
-
-    pub fn deinit(self: *FusedKernel) void {
-        self.allocator.free(self.operations);
-    }
-};
-
-pub const B200KernelOptimizer = struct {
-    config: B200OptimizationConfig,
-
-    pub fn init(config: B200OptimizationConfig) B200KernelOptimizer {
-        return B200KernelOptimizer{ .config = config };
-    }
-
-    pub fn fuseOperations(self: *B200KernelOptimizer, operations: []const OpType, allocator: Allocator) !FusedKernel {
-        var fused_ops = ArrayList(OpType).init(allocator);
-        defer fused_ops.deinit();
-
-        var i: usize = 0;
-        while (i < operations.len) : (i += 1) {
-            if (i + 2 < operations.len and operations[i] == .matmul and operations[i + 1] == .add and operations[i + 2] == .activation) {
-                try fused_ops.append(.fused_gemm_bias_act);
-                i += 2;
-            } else {
-                try fused_ops.append(operations[i]);
-            }
-        }
-
-        return FusedKernel{
-            .operations = try fused_ops.toOwnedSlice(),
-            .use_fp4 = self.config.use_fp4_tensor_cores,
-            .allocator = allocator,
-        };
-    }
-
-    pub fn selectOptimalPrecision(self: *B200KernelOptimizer, operation: OpType, tensor_size: usize) Precision {
-        if (self.config.use_fp4_tensor_cores and operation == .matmul) {
-            if (tensor_size > 1_000_000) {
-                return .fp4;
-            }
-        }
-
-        if (operation == .matmul and tensor_size > 100_000) {
-            return .fp8;
-        }
-
-        return .fp16;
-    }
-};
-
 pub const HyperparameterSpace = struct {
     lr_min: f32 = 1e-6,
     lr_max: f32 = 1e-2,

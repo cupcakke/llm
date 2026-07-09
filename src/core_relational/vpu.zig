@@ -1188,7 +1188,7 @@ pub const RelationalVectorOps = struct {
         return results;
     }
 
-    pub fn batchNormalize(self: *Self, vectors: []F64x4) void {
+    pub fn normalizeVectors(self: *Self, vectors: []F64x4) void {
         _ = self;
         for (vectors) |*vec| {
             vec.* = vec.normalize();
@@ -1700,7 +1700,7 @@ pub const VPU = struct {
 
     pub fn computeGraphEmbeddings(self: *Self, graph: *SelfSimilarRelationalGraph) !ArrayList(F64x4) {
         const embeddings = try self.relational_ops.vectorizeGraph(graph);
-        self.relational_ops.batchNormalize(embeddings.items);
+        self.relational_ops.normalizeVectors(embeddings.items);
         self.statistics.graph_operations += 1;
         self.cycle_count += 1;
         return embeddings;
