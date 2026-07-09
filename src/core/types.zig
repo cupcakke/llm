@@ -493,12 +493,12 @@ pub const PRNG = struct {
         var i: usize = 0;
         while (i + 8 <= buf.len) : (i += 8) {
             const val = self.next();
-            mem.writeIntLittle(u64, buf[i .. i + 8][0..8], val);
+            mem.writeInt(u64, buf[i .. i + 8][0..8], val, .little);
         }
         if (i < buf.len) {
             const val = self.next();
             var temp_buf: [8]u8 = undefined;
-            mem.writeIntLittle(u64, &temp_buf, val);
+            mem.writeInt(u64, &temp_buf, val, .little);
             const remaining = buf.len - i;
             @memcpy(buf[i..], temp_buf[0..remaining]);
         }
@@ -1946,7 +1946,7 @@ test "AntColony" {
     var colony = try AntColony.init(allocator, 5, 10);
     defer colony.deinit();
 
-    try colony.setPheromone(0, 1, try FixedPoint32.fromFloat(0.5));
+    colony.setPheromone(0, 1, try FixedPoint32.fromFloat(0.5));
     const p = colony.getPheromone(0, 1);
     try testing.expectApproxEqAbs(@as(f32, 0.5), p.toFloat(), 0.01);
 }

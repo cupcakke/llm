@@ -1263,7 +1263,7 @@ pub const CREVPipeline = struct {
             for (self.relation_patterns.items) |pattern| {
                 if (matchPatternMorphemeAware(sentence, pattern.pattern, self.allocator)) |m| {
                     const match_len = m.match_end - m.match_start;
-                    const best_len = if (best_match) |bm| bm.match_end - bm.match_start else usize(0);
+                    const best_len = if (best_match) |bm| bm.match_end - bm.match_start else @as(usize, 0);
                     if (best_match == null or match_len > best_len) {
                         best_match = .{ .match_start = m.match_start, .match_end = m.match_end, .pat = pattern };
                     }

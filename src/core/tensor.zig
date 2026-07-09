@@ -199,9 +199,9 @@ pub const Tensor = struct {
     }
 
     pub fn release(self: *Tensor) void {
+        self.shape.deinit(self.allocator);
         const old = @atomicRmw(usize, self.refcount, .Sub, 1, .acq_rel);
         if (old == 1) {
-            self.shape.deinit(self.allocator);
             self.allocator.free(self.base_data);
             self.allocator.destroy(self.refcount);
             self.allocator.destroy(self.cow);

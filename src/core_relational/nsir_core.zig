@@ -481,6 +481,7 @@ pub const SelfSimilarRelationalGraph = struct {
     entanglements: EntMap,
     quantum_register: StringHashMap(Qubit),
     topology_hash: [Sha256.digest_length]u8,
+    topology_hash_hex: [Sha256.digest_length * 2]u8,
     topology_hash_dirty: bool,
     rng: std.Random.DefaultPrng,
     rng_mutex: Mutex,
@@ -495,6 +496,7 @@ pub const SelfSimilarRelationalGraph = struct {
             .entanglements = EntMap.init(allocator),
             .quantum_register = StringHashMap(Qubit).init(allocator),
             .topology_hash = [_]u8{0} ** Sha256.digest_length,
+            .topology_hash_hex = [_]u8{0} ** (Sha256.digest_length * 2),
             .topology_hash_dirty = true,
             .rng = std.Random.DefaultPrng.init(seed),
             .rng_mutex = Mutex{},
@@ -1169,7 +1171,8 @@ pub const SelfSimilarRelationalGraph = struct {
 
     pub fn getTopologyHashHex(self: *SelfSimilarRelationalGraph) ![]const u8 {
         try self.ensureTopologyHash();
-        return std.fmt.fmtSliceHexLower(&self.topology_hash);
+        const written = try std.fmt.bufPrint(&self.topology_hash_hex, "{s}", .{std.fmt.fmtSliceHexLower(&self.topology_hash)});
+        return written;
     }
 
     pub fn encodeInformation(self: *SelfSimilarRelationalGraph, data: []const u8) ![]const u8 {
@@ -1361,7 +1364,7 @@ test "graph basic operations" {
     try testing.expect(g.getEdgesConst("a", "b") != null);
 
     _ = try g.measure("a");
-    _ = g.getTopologyHashHex();
+    _ = try g.getTopologyHashHex();
 }
 
 test "graph remove edge" {
