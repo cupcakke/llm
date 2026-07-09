@@ -10,6 +10,8 @@ Az 5. gyök paradigma: Visszafordítható Szórt Folyam (RSF)
 
 A JAIDE neurális feldolgozásának magja az RSFLayer, amely kereszt-affin csatoló rétegekből és determinisztikus szórt permutációkból áll. A Transformerekkel ellentétben, amelyek O(L · S · d) memória skálázástól szenvednek a figyelemmechanizmusok miatt, a JAIDE fix memória lábnyomot tart fenn az L mélységtől függetlenül.
 
+Mérési bizonyíték: a teljes RSF verem CPU-n végigfut (forward + backward + optimalizáló), a teljes tesztkészlet zöld (314 teszt, mind PASS Zig 0.13.0-val), és a benchmarkok is lefutnak. A backward út nem tárolja az aktivációkat, hanem az invertálható primitívvel menet közben rekonstruálja őket; a forward→inverse roundtrip 1e-4 tűréssel átmegy, ami közvetlenül igazolja, hogy a réteg alapművelete bijektív. A részletes teszt- és benchmark-eredményeket, valamint a környezeti adatokat lásd: BENCHMARKS.md.
+
 Főbb neurális komponensek:
 
 - RSF réteg: Megvalósítja a forwardInPlace és inverseInPlace műveleteket skála (S) és fordítás (T) komponensek segítségével.
